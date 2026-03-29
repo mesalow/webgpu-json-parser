@@ -5,19 +5,44 @@ const SHADER: &str = include_str!("parser.wgsl");
 fn main() {
     env_logger::init();
     let json_string = "{'a':null,'b':123,'c':24562472.12346757,'d':'a string','e':[1,2,3],'f':['a','b','c'],'g':{'a':{'b':1},'c':[{'x':1},{'y':2}],'d':[[1,2],[3,4]]}}";
-    let expected: u32 = json_string.bytes().map(|b| b as u32).sum();
+
+    let expected: Vec<u32> = json_string
+        .bytes()
+        .enumerate()
+        .filter(|(_, b)| matches!(b, b'{' | b'}' | b'[' | b']' | b':' | b','))
+        .map(|(i, _)| i as u32)
+        .collect();
+
     match pollster::block_on(run(json_string)) {
-        Ok(sum) => {
-            println!("GPU byte sum : {sum}");
-            println!("CPU byte sum : {expected}");
-            assert_eq!(sum, expected, "GPU/CPU mismatch!");
-            println!("✅ Match confirmed.");
+        Ok(output) => {
+            let gpu: Vec<u32> = output
+                .iter()
+                .enumerate()
+                .flat_map(|(word_idx, word)| {
+                    (0..32u32).filter_map(move |bit| {
+                        if (word >> bit) & 1 == 1 {
+                            Some(word_idx as u32 * 32 + bit)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+
+            if gpu == expected {
+                println!("OK — {} structural chars match", gpu.len());
+                println!("{:?}", gpu)
+            } else {
+                println!("MISMATCH");
+                println!("  GPU:      {:?}", gpu);
+                println!("  Expected: {:?}", expected);
+            }
         }
-        Err(e) => eprintln!("❌ Error: {e}"),
+        Err(e) => eprintln!("Error: {e}"),
     }
 }
 
-async fn run(json_string: &str) -> Result<u32, Box<dyn std::error::Error>> {
+async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
     // ── 1. Adapter & device ──────────────────────────────────────────────────
     let instance = wgpu::Instance::default();
 
@@ -69,15 +94,19 @@ async fn run(json_string: &str) -> Result<u32, Box<dyn std::error::Error>> {
         usage: wgpu::BufferUsages::STORAGE,
     });
 
+    let word_count = bytes.len() / 4;
+    let output_word_count = (word_count + 7) / 8;
+    let output_size = (output_word_count * std::mem::size_of::<u32>()) as u64;
+
     let output_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("output"),
-        contents: bytemuck::cast_slice(&[0u32]),
+        contents: bytemuck::cast_slice(&vec![0u32; output_word_count]),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
 
     let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("staging"),
-        size: std::mem::size_of::<u32>() as u64,
+        size: output_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -111,16 +140,15 @@ async fn run(json_string: &str) -> Result<u32, Box<dyn std::error::Error>> {
         });
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(1, 1, 1);
+        let workgroup_size = 64u32;
+        pass.dispatch_workgroups(
+            (word_count as u32 + workgroup_size - 1) / workgroup_size,
+            1,
+            1,
+        );
     }
 
-    encoder.copy_buffer_to_buffer(
-        &output_buf,
-        0,
-        &staging_buf,
-        0,
-        std::mem::size_of::<u32>() as u64,
-    );
+    encoder.copy_buffer_to_buffer(&output_buf, 0, &staging_buf, 0, output_size);
 
     queue.submit(std::iter::once(encoder.finish()));
 
@@ -133,7 +161,7 @@ async fn run(json_string: &str) -> Result<u32, Box<dyn std::error::Error>> {
     rx.recv()??;
 
     let data = slice.get_mapped_range();
-    let result: u32 = bytemuck::cast_slice(&data)[0];
+    let result: Vec<u32> = bytemuck::cast_slice(&data).to_vec();
     drop(data);
     staging_buf.unmap();
 
