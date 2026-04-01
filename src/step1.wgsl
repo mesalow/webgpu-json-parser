@@ -1,5 +1,7 @@
-@group(0) @binding(0) var<storage, read>       input:  array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<atomic<u32>>;
+@group(0) @binding(0) var<storage, read>       input:              array<u32>;
+@group(0) @binding(1) var<storage, read_write> bitmap_structural:  array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read_write> bitmap_backslash:   array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> bitmap_quote:       array<atomic<u32>>;
 
 const BACKSLASH = 0x5Cu;
 
@@ -58,9 +60,11 @@ fn extractNibbleFromWordDoubleQuote(word: u32) -> u32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let index = gid.x;
     if index >= arrayLength(&input) { return ;}
-    let nibble = extractNibbleFromWordStructural(input[index]);
+    let word    = input[index];
     let out_idx = index / 8u;
     let shift   = (index % 8u) * 4u;
-    atomicOr(&output[out_idx], nibble << shift);
+    atomicOr(&bitmap_structural[out_idx], extractNibbleFromWordStructural(word) << shift);
+    atomicOr(&bitmap_backslash[out_idx],  extractNibbleFromWordBackslash(word)  << shift);
+    atomicOr(&bitmap_quote[out_idx],      extractNibbleFromWordDoubleQuote(word) << shift);
    
 }
