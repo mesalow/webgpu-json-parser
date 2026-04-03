@@ -5,7 +5,7 @@ const STEP2: &str = include_str!("step2.wgsl");
 
 fn main() {
     env_logger::init();
-    let json_string = "{'a':null,'b':123,'c':24562472.12346757,'d':'a string','e':[1,2,3],'f':['a','b','c'],'g':{'a':{'b':1},'c':[{'x':1},{'y':2}],'d':[[1,2],[3,4]]}}";
+    let json_string = r#"{"a1": "a\\", "b1": "string with \\\"so called\\\\\" double quotes", "a":null,"b":123,"c":24562472.12346757,"d":"a string","e":[1,2,3],"f":["a","b","c"],"g":{"a":{"b":1},"c":[{"x":1},{"y":2}],"d":[[1,2],[3,4]]}}"#;
 
     let expected: Vec<u32> = json_string
         .bytes()
@@ -222,7 +222,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         );
     }
 
-    encoder.copy_buffer_to_buffer(&bitmap_structural, 0, &staging_buf, 0, output_size);
+    encoder.copy_buffer_to_buffer(&bitmap_quote_final, 0, &staging_buf, 0, output_size);
 
     queue.submit(std::iter::once(encoder.finish()));
 
