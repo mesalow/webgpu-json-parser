@@ -1,7 +1,24 @@
-use wgpu::util::DeviceExt;
+use wgpu::{
+    util::DeviceExt, BindGroup, BindGroupEntry, Buffer, CommandEncoder, ComputePipeline, Device,
+};
 
 const STEP1: &str = include_str!("step1.wgsl");
 const STEP2: &str = include_str!("step2.wgsl");
+
+fn buf_entry(binding: u32, buf: &Buffer) -> BindGroupEntry<'_> {
+    BindGroupEntry {
+        binding,
+        resource: buf.as_entire_binding(),
+    }
+}
+
+fn zeroed_storage_buf(device: &Device, label: &str, count: usize) -> Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::cast_slice(&vec![0u32; count]),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    })
+}
 
 fn main() {
     env_logger::init();
@@ -43,6 +60,58 @@ fn main() {
     }
 }
 
+struct ComputeStep {
+    pipeline: ComputePipeline,
+    bind_group: BindGroup,
+    workgroups: u32,
+    label: String,
+}
+
+impl ComputeStep {
+    fn new(
+        device: &Device,
+        shader_source: &str,
+        label: &str,
+        bg_entries: &[BindGroupEntry],
+        workgroups: u32,
+    ) -> ComputeStep {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&format!("{label}_shader")),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(&format!("{label}_pipeline")),
+            layout: None,
+            module: &shader,
+            entry_point: "main",
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("{label}_bg")),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: bg_entries,
+        });
+
+        ComputeStep {
+            pipeline,
+            bind_group,
+            workgroups,
+            label: label.to_string(),
+        }
+    }
+
+    fn dispatch(&self, encoder: &mut CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some(&self.label),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.dispatch_workgroups(self.workgroups, 1, 1);
+    }
+}
+
 async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
     // ── 1. Adapter & device ──────────────────────────────────────────────────
     let instance = wgpu::Instance::default();
@@ -66,22 +135,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         .request_device(&wgpu::DeviceDescriptor::default(), None)
         .await?;
 
-    // ── 2. Shader & pipeline ─────────────────────────────────────────────────
-    let shader1 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("step1"),
-        source: wgpu::ShaderSource::Wgsl(STEP1.into()),
-    });
-
-    let pipeline1 = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("pipeline1"),
-        layout: None,
-        module: &shader1,
-        entry_point: "main",
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    // ── 3. Buffers ───────────────────────────────────────────────────────────
+    // ── 2. Buffers ───────────────────────────────────────────────────────────
     // WGSL has no u8 type — pack bytes into u32 words (little-endian, zero-padded).
     // Padding bytes are 0 so they don't affect the sum.
     let mut bytes = json_string.as_bytes().to_vec();
@@ -99,29 +153,17 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     let output_word_count = (word_count + 7) / 8;
     let output_size = (output_word_count * std::mem::size_of::<u32>()) as u64;
 
-    let bitmap_structural = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("bitmap_structural"),
-        contents: bytemuck::cast_slice(&vec![0u32; output_word_count]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
+    // step 1
+    let bitmap_structural = zeroed_storage_buf(&device, "bitmap_structural", output_word_count);
+    let bitmap_backslash = zeroed_storage_buf(&device, "bitmap_backslash", output_word_count);
+    let bitmap_quote = zeroed_storage_buf(&device, "bitmap_quote", output_word_count);
 
-    let bitmap_backslash = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("bitmap_backslash"),
-        contents: bytemuck::cast_slice(&vec![0u32; output_word_count]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
-    let bitmap_quote = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("bitmap_quote"),
-        contents: bytemuck::cast_slice(&vec![0u32; output_word_count]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
+    // step2
+    let bitmap_quote_final = zeroed_storage_buf(&device, "bitmap_quote_final", output_word_count);
 
-    let bitmap_quote_final = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("bitmap_quote_final"),
-        contents: bytemuck::cast_slice(&vec![0u32; output_word_count]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
+    // step3
 
+    // final output
     let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("staging"),
         size: output_size,
@@ -129,97 +171,42 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         mapped_at_creation: false,
     });
 
-    // ── 4. Bind group ────────────────────────────────────────────────────────
-    let bind_group_layout = pipeline1.get_bind_group_layout(0);
-    let bind_group1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("step1_bg"),
-        layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: input_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: bitmap_structural.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: bitmap_backslash.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: bitmap_quote.as_entire_binding(),
-            },
+    // ── 3. Create steps  ───────────────────────────────────────────────────
+    let workgroup_size = 64u32;
+
+    let step1 = ComputeStep::new(
+        &device,
+        STEP1,
+        "step1",
+        &[
+            buf_entry(0, &input_buf),
+            buf_entry(1, &bitmap_structural),
+            buf_entry(2, &bitmap_backslash),
+            buf_entry(3, &bitmap_quote),
         ],
-    });
+        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+    );
 
-    let shader2 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("step2"),
-        source: wgpu::ShaderSource::Wgsl(STEP2.into()),
-    });
-
-    let pipeline2 = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("pipeline2"),
-        layout: None,
-        module: &shader2,
-        entry_point: "main",
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    let bind_group2 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("step2_bg"),
-        layout: &pipeline2.get_bind_group_layout(0),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: bitmap_backslash.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: bitmap_quote.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: bitmap_quote_final.as_entire_binding(),
-            },
+    let step2 = ComputeStep::new(
+        &device,
+        STEP2,
+        "step2",
+        &[
+            buf_entry(0, &bitmap_backslash),
+            buf_entry(1, &bitmap_quote),
+            buf_entry(2, &bitmap_quote_final),
         ],
-    });
+        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+    );
 
-    // ── 5. Encode & submit ───────────────────────────────────────────────────
+    let steps = vec![step1, step2];
+
+    // ── 4. Encode & submit ───────────────────────────────────────────────────
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("parser_encoder"),
     });
-
-    {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("step1_pass"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(&pipeline1);
-        pass.set_bind_group(0, &bind_group1, &[]);
-        let workgroup_size = 64u32;
-        pass.dispatch_workgroups(
-            (word_count as u32 + workgroup_size - 1) / workgroup_size,
-            1,
-            1,
-        );
-    }
-
-    {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("step2_pass"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(&pipeline2);
-        pass.set_bind_group(0, &bind_group2, &[]);
-        let workgroup_size = 64u32;
-        pass.dispatch_workgroups(
-            (output_word_count as u32 + workgroup_size - 1) / workgroup_size,
-            1,
-            1,
-        );
+    for step in steps {
+        step.dispatch(&mut encoder);
     }
 
     encoder.copy_buffer_to_buffer(&bitmap_quote_final, 0, &staging_buf, 0, output_size);
