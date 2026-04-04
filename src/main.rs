@@ -1,63 +1,26 @@
 mod compute_step;
+mod prefix_scan;
 mod utils;
 
 use compute_step::ComputeStep;
 use utils::{buf_entry, zeroed_storage_buf};
 use wgpu::util::DeviceExt;
 
+use crate::prefix_scan::PrefixScan;
+
 const STEP1: &str = include_str!("step1.wgsl");
 const STEP2: &str = include_str!("step2.wgsl");
-
-fn buf_entry(binding: u32, buf: &Buffer) -> BindGroupEntry<'_> {
-    BindGroupEntry {
-        binding,
-        resource: buf.as_entire_binding(),
-    }
-}
-
-fn zeroed_storage_buf(device: &Device, label: &str, count: usize) -> Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::cast_slice(&vec![0u32; count]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    })
-}
+const STEP3_1: &str = include_str!("step3_1.wgsl");
+// STEP3_2 will be handled by prefix scan
+const STEP3_3: &str = include_str!("step3_3.wgsl");
 
 fn main() {
     env_logger::init();
     let json_string = r#"{"a1": "a\\", "b1": "string with \\\"so called\\\\\" double quotes", "a":null,"b":123,"c":24562472.12346757,"d":"a string","e":[1,2,3],"f":["a","b","c"],"g":{"a":{"b":1},"c":[{"x":1},{"y":2}],"d":[[1,2],[3,4]]}}"#;
 
-    let expected: Vec<u32> = json_string
-        .bytes()
-        .enumerate()
-        .filter(|(_, b)| matches!(b, b'{' | b'}' | b'[' | b']' | b':' | b','))
-        .map(|(i, _)| i as u32)
-        .collect();
-
     match pollster::block_on(run(json_string)) {
         Ok(output) => {
-            let gpu: Vec<u32> = output
-                .iter()
-                .enumerate()
-                .flat_map(|(word_idx, word)| {
-                    (0..32u32).filter_map(move |bit| {
-                        if (word >> bit) & 1 == 1 {
-                            Some(word_idx as u32 * 32 + bit)
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .collect();
-
-            if gpu == expected {
-                println!("OK — {} structural chars match", gpu.len());
-                println!("{:?}", gpu)
-            } else {
-                println!("MISMATCH");
-                println!("  GPU:      {:?}", gpu);
-                println!("  Expected: {:?}", expected);
-            }
+            println!("quotes per word: {:?}", &output[..output.len().min(20)]);
         }
         Err(e) => eprintln!("Error: {e}"),
     }
@@ -83,7 +46,13 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     );
 
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default(), None)
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                required_features: wgpu::Features::SUBGROUP,
+                ..Default::default()
+            },
+            None,
+        )
         .await?;
 
     // ── 2. Buffers ───────────────────────────────────────────────────────────
@@ -112,7 +81,11 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     // step2
     let bitmap_quote_final = zeroed_storage_buf(&device, "bitmap_quote_final", output_word_count);
 
-    // step3
+    // step3_1 --> get bitmap_quote_final and return per word quote count
+    let per_word_quote_count =
+        zeroed_storage_buf(&device, "per_word_quote_count", output_word_count);
+
+    let acc_quote_count = zeroed_storage_buf(&device, "acc_quote_count", output_word_count);
 
     // final output
     let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -123,6 +96,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     });
 
     // ── 3. Create steps  ───────────────────────────────────────────────────
+
     let workgroup_size = 64u32;
 
     let step1 = ComputeStep::new(
@@ -149,8 +123,20 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         ],
         (word_count as u32 + workgroup_size - 1) / workgroup_size,
     );
+    let prefix_scan = PrefixScan::new(&device, per_word_quote_count);
 
-    let steps = vec![step1, step2];
+    let step3_1 = ComputeStep::new(
+        &device,
+        STEP3_1,
+        "step3_1",
+        &[
+            buf_entry(0, &bitmap_quote_final),
+            buf_entry(1, &prefix_scan.result_buf()),
+        ],
+        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+    );
+
+    let steps_1to3 = vec![step1, step2, step3_1];
 
     // ── 4. Encode & submit ───────────────────────────────────────────────────
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -161,16 +147,17 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             label: Some("main_pass"),
             timestamp_writes: None,
         });
-        for step in &steps {
+        for step in &steps_1to3 {
             step.dispatch(&mut pass);
         }
-    }
+        prefix_scan.dispatch(&mut pass);
+    } // pass dropped here, encoder unlocked
 
-    encoder.copy_buffer_to_buffer(&bitmap_quote_final, 0, &staging_buf, 0, output_size);
+    encoder.copy_buffer_to_buffer(&prefix_scan.result_buf(), 0, &staging_buf, 0, output_size);
 
     queue.submit(std::iter::once(encoder.finish()));
 
-    // ── 6. Read back result ──────────────────────────────────────────────────
+    // ── 5. Read back result ──────────────────────────────────────────────────
     let slice = staging_buf.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
