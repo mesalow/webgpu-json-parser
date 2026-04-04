@@ -1,5 +1,5 @@
 use wgpu::{
-    util::DeviceExt, BindGroup, BindGroupEntry, Buffer, CommandEncoder, ComputePipeline, Device,
+    util::DeviceExt, BindGroup, BindGroupEntry, Buffer, ComputePass, ComputePipeline, Device,
 };
 
 const STEP1: &str = include_str!("step1.wgsl");
@@ -101,11 +101,7 @@ impl ComputeStep {
         }
     }
 
-    fn dispatch(&self, encoder: &mut CommandEncoder) {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some(&self.label),
-            timestamp_writes: None,
-        });
+    fn dispatch(&self, pass: &mut ComputePass) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.dispatch_workgroups(self.workgroups, 1, 1);
@@ -205,8 +201,14 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("parser_encoder"),
     });
-    for step in steps {
-        step.dispatch(&mut encoder);
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("main_pass"),
+            timestamp_writes: None,
+        });
+        for step in &steps {
+            step.dispatch(&mut pass);
+        }
     }
 
     encoder.copy_buffer_to_buffer(&bitmap_quote_final, 0, &staging_buf, 0, output_size);
