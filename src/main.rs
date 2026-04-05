@@ -20,7 +20,20 @@ fn main() {
 
     match pollster::block_on(run(json_string)) {
         Ok(output) => {
-            println!("quotes per word: {:?}", &output[..output.len().min(20)]);
+            let gpu: Vec<u32> = output
+                .iter()
+                .enumerate()
+                .flat_map(|(word_idx, word)| {
+                    (0..32u32).filter_map(move |bit| {
+                        if (word >> bit) & 1 == 1 {
+                            Some(word_idx as u32 * 32 + bit)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            println!("gepu {:?}", gpu);
         }
         Err(e) => eprintln!("Error: {e}"),
     }
@@ -85,7 +98,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     let per_word_quote_count =
         zeroed_storage_buf(&device, "per_word_quote_count", output_word_count);
 
-    let acc_quote_count = zeroed_storage_buf(&device, "acc_quote_count", output_word_count);
+    let string_mask = zeroed_storage_buf(&device, "string_mask", output_word_count);
 
     // final output
     let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -138,6 +151,22 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
 
     let steps_1to3 = vec![step1, step2, step3_1];
 
+    // step3_2 is prefix scan, extra step
+
+    let step3_3 = ComputeStep::new(
+        &device,
+        STEP3_3,
+        "step3_3",
+        &[
+            buf_entry(0, &bitmap_quote_final),
+            buf_entry(1, &prefix_scan.result_buf()),
+            buf_entry(2, &string_mask),
+        ],
+        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+    );
+
+    let steps3_to_final = vec![step3_3];
+
     // ── 4. Encode & submit ───────────────────────────────────────────────────
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("parser_encoder"),
@@ -151,9 +180,13 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             step.dispatch(&mut pass);
         }
         prefix_scan.dispatch(&mut pass);
+
+        for step in &steps3_to_final {
+            step.dispatch(&mut pass);
+        }
     } // pass dropped here, encoder unlocked
 
-    encoder.copy_buffer_to_buffer(&prefix_scan.result_buf(), 0, &staging_buf, 0, output_size);
+    encoder.copy_buffer_to_buffer(&string_mask, 0, &staging_buf, 0, output_size);
 
     queue.submit(std::iter::once(encoder.finish()));
 
