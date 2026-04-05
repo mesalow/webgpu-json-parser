@@ -90,6 +90,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     let bitmap_structural = zeroed_storage_buf(&device, "bitmap_structural", output_word_count);
     let bitmap_backslash = zeroed_storage_buf(&device, "bitmap_backslash", output_word_count);
     let bitmap_quote = zeroed_storage_buf(&device, "bitmap_quote", output_word_count);
+    let bitmap_open_close = zeroed_storage_buf(&device, "bitmap_open_close", output_word_count);
 
     // step2
     let bitmap_quote_final = zeroed_storage_buf(&device, "bitmap_quote_final", output_word_count);
@@ -121,6 +122,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(1, &bitmap_structural),
             buf_entry(2, &bitmap_backslash),
             buf_entry(3, &bitmap_quote),
+            buf_entry(4, &bitmap_open_close),
         ],
         (word_count as u32 + workgroup_size - 1) / workgroup_size,
     );
