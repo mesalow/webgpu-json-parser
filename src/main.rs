@@ -13,6 +13,8 @@ const STEP2: &str = include_str!("step2.wgsl");
 const STEP3_1: &str = include_str!("step3_1.wgsl");
 // STEP3_2 will be handled by prefix scan
 const STEP3_3: &str = include_str!("step3_3.wgsl");
+const STEP4_1: &str = include_str!("step4_1.wgsl");
+const STEP4_3: &str = include_str!("step4_3.wgsl");
 
 fn main() {
     env_logger::init();
@@ -20,20 +22,26 @@ fn main() {
 
     match pollster::block_on(run(json_string)) {
         Ok(output) => {
-            let gpu: Vec<u32> = output
-                .iter()
-                .enumerate()
-                .flat_map(|(word_idx, word)| {
-                    (0..32u32).filter_map(move |bit| {
-                        if (word >> bit) & 1 == 1 {
-                            Some(word_idx as u32 * 32 + bit)
-                        } else {
-                            None
-                        }
-                    })
+            // for bitmap output:
+            /*  let gpu: Vec<u32> = output
+            .iter()
+            .enumerate()
+            .flat_map(|(word_idx, word)| {
+                (0..32u32).filter_map(move |bit| {
+                    if (word >> bit) & 1 == 1 {
+                        Some(word_idx as u32 * 32 + bit)
+                    } else {
+                        None
+                    }
                 })
-                .collect();
-            println!("gepu {:?}", gpu);
+            })
+            .collect(); */
+            let gpu: Vec<u32> = output.iter().copied().collect();
+            println!("gpu {:?}", gpu);
+            let bytes = json_string.as_bytes();
+            for &idx in &[203u32, 205, 207, 208, 209, 210] {
+                println!("pos {}: {:?}", idx, bytes[idx as usize] as char);
+            }
         }
         Err(e) => eprintln!("Error: {e}"),
     }
@@ -99,7 +107,18 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     let per_word_quote_count =
         zeroed_storage_buf(&device, "per_word_quote_count", output_word_count);
 
+    //step 3_3 --> string mask to mask out struct chars in strings
     let string_mask = zeroed_storage_buf(&device, "string_mask", output_word_count);
+
+    // step 4_1 --> count of structural + count of oc
+    let count_structural = zeroed_storage_buf(&device, "count_structural", output_word_count);
+    let count_open_close = zeroed_storage_buf(&device, "count_open_close", output_word_count);
+
+    // step 4_3 --> structural index, open-close and open-close-index
+
+    let structural_index = zeroed_storage_buf(&device, "structural_index", bytes.len());
+    let open_close_chars = zeroed_storage_buf(&device, "open_close_chars", bytes.len());
+    let open_close_index = zeroed_storage_buf(&device, "open_close_index", bytes.len());
 
     // final output
     let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -138,7 +157,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         ],
         (word_count as u32 + workgroup_size - 1) / workgroup_size,
     );
-    let prefix_scan = PrefixScan::new(&device, per_word_quote_count);
+    let prefix_scan_quotes = PrefixScan::new(&device, per_word_quote_count);
 
     let step3_1 = ComputeStep::new(
         &device,
@@ -146,7 +165,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         "step3_1",
         &[
             buf_entry(0, &bitmap_quote_final),
-            buf_entry(1, &prefix_scan.result_buf()),
+            buf_entry(1, &prefix_scan_quotes.result_buf()),
         ],
         (word_count as u32 + workgroup_size - 1) / workgroup_size,
     );
@@ -161,13 +180,47 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         "step3_3",
         &[
             buf_entry(0, &bitmap_quote_final),
-            buf_entry(1, &prefix_scan.result_buf()),
+            buf_entry(1, &prefix_scan_quotes.result_buf()),
             buf_entry(2, &string_mask),
         ],
         (word_count as u32 + workgroup_size - 1) / workgroup_size,
     );
 
-    let steps3_to_final = vec![step3_3];
+    // get total count of structural and open close (braces / brackets)
+    let step4_1 = ComputeStep::new(
+        &device,
+        STEP4_1,
+        "step4_1",
+        &[
+            buf_entry(0, &bitmap_structural),
+            buf_entry(1, &bitmap_open_close),
+            buf_entry(2, &string_mask),
+            buf_entry(3, &count_structural),
+            buf_entry(4, &count_open_close),
+        ],
+        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+    );
+    let steps3_to_4 = vec![step3_3, step4_1];
+
+    let prefix_scan_structural = PrefixScan::new(&device, count_structural);
+    let prefix_scan_open_close = PrefixScan::new(&device, count_open_close);
+
+    let step4_3 = ComputeStep::new(
+        &device,
+        STEP4_3,
+        "step4_3",
+        &[
+            buf_entry(0, &prefix_scan_open_close.result_buf()),
+            buf_entry(1, &prefix_scan_structural.result_buf()),
+            buf_entry(2, &bitmap_open_close),
+            buf_entry(3, &input_buf),
+            buf_entry(4, &bitmap_structural),
+            buf_entry(5, &structural_index),
+            buf_entry(6, &open_close_chars),
+            buf_entry(7, &open_close_index),
+        ],
+        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+    );
 
     // ── 4. Encode & submit ───────────────────────────────────────────────────
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -181,14 +234,18 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         for step in &steps_1to3 {
             step.dispatch(&mut pass);
         }
-        prefix_scan.dispatch(&mut pass);
+        prefix_scan_quotes.dispatch(&mut pass);
 
-        for step in &steps3_to_final {
+        for step in &steps3_to_4 {
             step.dispatch(&mut pass);
         }
+        prefix_scan_structural.dispatch(&mut pass);
+        prefix_scan_open_close.dispatch(&mut pass);
+
+        step4_3.dispatch((&mut pass));
     } // pass dropped here, encoder unlocked
 
-    encoder.copy_buffer_to_buffer(&string_mask, 0, &staging_buf, 0, output_size);
+    encoder.copy_buffer_to_buffer(&structural_index, 0, &staging_buf, 0, output_size);
 
     queue.submit(std::iter::once(encoder.finish()));
 
