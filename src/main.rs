@@ -16,6 +16,8 @@ const STEP3_3: &str = include_str!("step3_3.wgsl");
 const STEP4_1: &str = include_str!("step4_1.wgsl");
 const STEP4_3: &str = include_str!("step4_3.wgsl");
 
+const PARSE_STEP1_1: &str = include_str!("parse_step1_1.wgsl");
+
 fn main() {
     env_logger::init();
     let json_string = r#"{"a1": "a\\", "b1": "string with \\\"so called\\\\\" double quotes", "a":null,"b":123,"c":24562472.12346757,"d":"a string","e":[1,2,3],"f":["a","b","c"],"g":{"a":{"b":1},"c":[{"x":1},{"y":2}],"d":[[1,2],[3,4]]}}"#;
@@ -70,6 +72,10 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         .request_device(
             &wgpu::DeviceDescriptor {
                 required_features: wgpu::Features::SUBGROUP,
+                required_limits: wgpu::Limits {
+                    max_storage_buffers_per_shader_stage: 12,
+                    ..wgpu::Limits::default()
+                },
                 ..Default::default()
             },
             None,
@@ -92,7 +98,8 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
 
     let word_count = bytes.len() / 4;
     let output_word_count = (word_count + 7) / 8;
-    let output_size = (output_word_count * std::mem::size_of::<u32>()) as u64;
+    let output_size = (bytes.len() * std::mem::size_of::<u32>()) as u64;
+    let output_size_bitmap = (output_word_count * std::mem::size_of::<u32>()) as u64;
 
     // step 1
     let bitmap_structural = zeroed_storage_buf(&device, "bitmap_structural", output_word_count);
@@ -118,12 +125,26 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
 
     let structural_index = zeroed_storage_buf(&device, "structural_index", bytes.len());
     let open_close_chars = zeroed_storage_buf(&device, "open_close_chars", bytes.len());
+    let open_close_chars_mapped = zeroed_storage_buf(&device, "open_close_chars", bytes.len());
+    let open_close_chars_mapped_for_parser =
+        zeroed_storage_buf(&device, "open_close_chars", bytes.len());
     let open_close_index = zeroed_storage_buf(&device, "open_close_index", bytes.len());
+
+    // parsing
+    // step 1
+    let depth_array = zeroed_storage_buf(&device, "depth_array", bytes.len());
 
     // final output
     let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("staging"),
         size: output_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let staging_buf_bitmap = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("staging"),
+        size: output_size_bitmap,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -218,6 +239,23 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(5, &structural_index),
             buf_entry(6, &open_close_chars),
             buf_entry(7, &open_close_index),
+            buf_entry(8, &open_close_chars_mapped),
+            buf_entry(9, &open_close_chars_mapped_for_parser),
+        ],
+        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+    );
+
+    // parser
+    let prefix_scan_depth = PrefixScan::new(&device, open_close_chars_mapped);
+
+    let parser_step1_1 = ComputeStep::new(
+        &device,
+        PARSE_STEP1_1,
+        "parser_step1_1",
+        &[
+            buf_entry(0, prefix_scan_depth.result_buf()),
+            buf_entry(1, &open_close_chars_mapped_for_parser),
+            buf_entry(2, &depth_array),
         ],
         (word_count as u32 + workgroup_size - 1) / workgroup_size,
     );
@@ -243,6 +281,8 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         prefix_scan_open_close.dispatch(&mut pass);
 
         step4_3.dispatch((&mut pass));
+
+        parser_step1_1.dispatch(&mut pass);
     } // pass dropped here, encoder unlocked
 
     encoder.copy_buffer_to_buffer(&structural_index, 0, &staging_buf, 0, output_size);
