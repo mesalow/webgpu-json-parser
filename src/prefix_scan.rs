@@ -31,12 +31,12 @@ impl PrefixScan {
 
         let block_scan_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("block-scan shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("step3_2_block_scan.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("prefix_block_scan.wgsl").into()),
         });
 
         let add_carry_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("add-carry shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("step3_2_add_carry.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("prefix_add_carry.wgsl").into()),
         });
 
         let pipeline_write_sum = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
