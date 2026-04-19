@@ -6,7 +6,9 @@ use compute_step::ComputeStep;
 use utils::{buf_entry, zeroed_storage_buf};
 use wgpu::util::DeviceExt;
 
-use crate::prefix_scan::PrefixScan;
+use crate::{prefix_scan::PrefixScan, utils::create_u32_buf};
+
+const WORKGROUP_SIZE: u32 = 64;
 
 const STEP1: &str = include_str!("step1.wgsl");
 const STEP2: &str = include_str!("step2.wgsl");
@@ -17,6 +19,10 @@ const STEP4_1: &str = include_str!("step4_1.wgsl");
 const STEP4_3: &str = include_str!("step4_3.wgsl");
 
 const PARSE_STEP1_1: &str = include_str!("parse_step1_1.wgsl");
+const RADIX_HIST: &str = include_str!("radix_histogram.wgsl");
+
+// tweak this empirically or based on input size even
+const RADIX_SORT_TARGET_SORT_WORKGROUPS: u32 = 512;
 
 fn main() {
     env_logger::init();
@@ -101,6 +107,16 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     let output_size = (bytes.len() * std::mem::size_of::<u32>()) as u64;
     let output_size_bitmap = (output_word_count * std::mem::size_of::<u32>()) as u64;
 
+    let number_of_workgroups = (word_count as u32).div_ceil(WORKGROUP_SIZE);
+
+    let radix_sort_elements_per_thread = (bytes.len() as u32)
+        .div_ceil(RADIX_SORT_TARGET_SORT_WORKGROUPS * WORKGROUP_SIZE)
+        .max(1);
+
+    let number_of_radix_sort_workgroups = (bytes.len() as u32)
+        .div_ceil(radix_sort_elements_per_thread * WORKGROUP_SIZE)
+        .max(1);
+
     // step 1
     let bitmap_structural = zeroed_storage_buf(&device, "bitmap_structural", output_word_count);
     let bitmap_backslash = zeroed_storage_buf(&device, "bitmap_backslash", output_word_count);
@@ -134,6 +150,19 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     // step 1
     let depth_array = zeroed_storage_buf(&device, "depth_array", bytes.len());
 
+    // step2: radix sort of the depths
+    let global_hist = zeroed_storage_buf(
+        &device,
+        "depth_array",
+        (number_of_radix_sort_workgroups * 256).try_into()?, // TODO: better handling of usize here, should be ok always
+    );
+    let pass_index = create_u32_buf(&device, "pass-index", 1u32);
+    let elements_per_thread = create_u32_buf(
+        &device,
+        "elements_per_thread",
+        radix_sort_elements_per_thread,
+    );
+
     // final output
     let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("staging"),
@@ -151,8 +180,6 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
 
     // ── 3. Create steps  ───────────────────────────────────────────────────
 
-    let workgroup_size = 64u32;
-
     let step1 = ComputeStep::new(
         &device,
         STEP1,
@@ -164,7 +191,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(3, &bitmap_quote),
             buf_entry(4, &bitmap_open_close),
         ],
-        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+        number_of_workgroups,
     );
 
     let step2 = ComputeStep::new(
@@ -176,7 +203,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(1, &bitmap_quote),
             buf_entry(2, &bitmap_quote_final),
         ],
-        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+        number_of_workgroups,
     );
     let prefix_scan_quotes = PrefixScan::new(&device, per_word_quote_count);
 
@@ -188,7 +215,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(0, &bitmap_quote_final),
             buf_entry(1, &prefix_scan_quotes.result_buf()),
         ],
-        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+        number_of_workgroups,
     );
 
     let steps_1to3 = vec![step1, step2, step3_1];
@@ -204,7 +231,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(1, &prefix_scan_quotes.result_buf()),
             buf_entry(2, &string_mask),
         ],
-        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+        number_of_workgroups,
     );
 
     // get total count of structural and open close (braces / brackets)
@@ -219,7 +246,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(3, &count_structural),
             buf_entry(4, &count_open_close),
         ],
-        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+        number_of_workgroups,
     );
     let steps3_to_4 = vec![step3_3, step4_1];
 
@@ -242,7 +269,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(8, &open_close_chars_mapped),
             buf_entry(9, &open_close_chars_mapped_for_parser),
         ],
-        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+        number_of_workgroups,
     );
 
     // parser
@@ -257,8 +284,23 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(1, &open_close_chars_mapped_for_parser),
             buf_entry(2, &depth_array),
         ],
-        (word_count as u32 + workgroup_size - 1) / workgroup_size,
+        number_of_workgroups,
     );
+
+    let radix_sort_step_hist = ComputeStep::new(
+        &device,
+        RADIX_HIST,
+        "radix_sort_hist",
+        &[
+            buf_entry(0, &depth_array),
+            buf_entry(1, &pass_index),
+            buf_entry(2, &elements_per_thread),
+            buf_entry(3, &global_hist),
+        ],
+        number_of_radix_sort_workgroups,
+    );
+
+    let radix_sort_prefix_scan = PrefixScan::new(&device, global_hist);
 
     // ── 4. Encode & submit ───────────────────────────────────────────────────
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -283,6 +325,9 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         step4_3.dispatch((&mut pass));
 
         parser_step1_1.dispatch(&mut pass);
+
+        radix_sort_step_hist.dispatch(&mut pass);
+        radix_sort_prefix_scan.dispatch(&mut pass);
     } // pass dropped here, encoder unlocked
 
     encoder.copy_buffer_to_buffer(&structural_index, 0, &staging_buf, 0, output_size);

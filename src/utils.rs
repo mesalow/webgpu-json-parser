@@ -14,3 +14,12 @@ pub fn zeroed_storage_buf(device: &Device, label: &str, count: usize) -> Buffer 
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     })
 }
+
+pub fn create_u32_buf(device: &Device, label: &str, value: u32) -> Buffer {
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::bytes_of(&value),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+    buffer
+}
