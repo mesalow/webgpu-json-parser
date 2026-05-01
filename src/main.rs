@@ -2,6 +2,11 @@ mod compute_step;
 mod prefix_scan;
 mod utils;
 
+#[cfg(test)]
+mod test_harness;
+#[cfg(test)]
+mod shader_tests;
+
 use compute_step::ComputeStep;
 use utils::{buf_entry, zeroed_storage_buf};
 use wgpu::util::DeviceExt;
