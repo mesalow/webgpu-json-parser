@@ -3,9 +3,9 @@ mod prefix_scan;
 mod utils;
 
 #[cfg(test)]
-mod test_harness;
-#[cfg(test)]
 mod shader_tests;
+#[cfg(test)]
+mod test_harness;
 
 use compute_step::ComputeStep;
 use utils::{buf_entry, zeroed_storage_buf};
@@ -197,6 +197,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(4, &bitmap_open_close),
         ],
         number_of_workgroups,
+        None,
     );
 
     let step2 = ComputeStep::new(
@@ -209,6 +210,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(2, &bitmap_quote_final),
         ],
         number_of_workgroups,
+        None,
     );
     let prefix_scan_quotes = PrefixScan::new(&device, per_word_quote_count);
 
@@ -221,6 +223,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(1, &prefix_scan_quotes.result_buf()),
         ],
         number_of_workgroups,
+        None,
     );
 
     let steps_1to3 = vec![step1, step2, step3_1];
@@ -237,6 +240,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(2, &string_mask),
         ],
         number_of_workgroups,
+        None,
     );
 
     // get total count of structural and open close (braces / brackets)
@@ -252,6 +256,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(4, &count_open_close),
         ],
         number_of_workgroups,
+        None,
     );
     let steps3_to_4 = vec![step3_3, step4_1];
 
@@ -275,6 +280,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(9, &open_close_chars_mapped_for_parser),
         ],
         number_of_workgroups,
+        None,
     );
 
     // parser
@@ -290,6 +296,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(2, &depth_array),
         ],
         number_of_workgroups,
+        None,
     );
 
     let radix_sort_step_hist = ComputeStep::new(
@@ -299,10 +306,10 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         &[
             buf_entry(0, &depth_array),
             buf_entry(1, &pass_index),
-            buf_entry(2, &elements_per_thread),
             buf_entry(3, &global_hist),
         ],
         number_of_radix_sort_workgroups,
+        None,
     );
 
     let radix_sort_prefix_scan = PrefixScan::new(&device, global_hist);

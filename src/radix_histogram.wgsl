@@ -19,10 +19,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let total_number_of_workgroups = number_of_workgroups.x * number_of_workgroups.y * number_of_workgroups.z; 
 
     let base_index = (workgroup_id * WORKGROUP_SIZE + lid.x) * elements_per_thread;
-/**
- * we limit number of workgroups per https://gpuopen.com/download/Introduction_to_GPU_Radix_Sort.pdf ->  thus we increase the number of elements scanned per thread so that each workgroup does more work 
- * the local histogram then gets "more values" per workgroup
- */
+
+    /**
+    * we limit number of workgroups per https://gpuopen.com/download/Introduction_to_GPU_Radix_Sort.pdf ->  thus we increase the number of elements scanned per thread so that each workgroup does more work 
+    * the local histogram then gets "more values" per workgroup
+    */
     for (var i = 0u; i< elements_per_thread; i++) {
         let index = base_index + i;
         if index < arrayLength(&input_array) {
