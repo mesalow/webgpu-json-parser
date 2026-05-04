@@ -201,27 +201,13 @@ fn radix_reorder_normal() {
 
     // the original values
     let mut original_input_vec = vec![];
-    let number_of_1 = 112;
-    let number_of_2 = 101;
-    let number_of_3 = 94;
-    let number_of_4 = 81;
-    let number_of_5 = 75;
-    let number_of_6 = 49;
     original_input_vec.extend(vec![1u32; 112]);
     original_input_vec.extend(vec![2u32; 101]);
     original_input_vec.extend(vec![3u32; 94]);
     original_input_vec.extend(vec![4u32; 81]);
     original_input_vec.extend(vec![5u32; 75]);
     original_input_vec.extend(vec![6u32; 49]);
-    original_input_vec.extend(vec![
-        7;
-        4096 - number_of_1
-            - number_of_2
-            - number_of_3
-            - number_of_4
-            - number_of_5
-            - number_of_6
-    ]);
+    original_input_vec.extend(vec![7; 3584]);
 
     let mut rng = rand::rng();
     original_input_vec.shuffle(&mut rng);
@@ -273,22 +259,11 @@ fn radix_reorder_normal() {
         );
     }
     println!("result {:?}", result);
-    assert_eq!(
-        result.len(),
-        original_input_vec.len(),
-        "result and input same length"
-    );
-    assert_eq!(result[0], 1, "first number is 1");
-    assert_eq!(result[111], 1, "112 1s");
-    assert_eq!(result[number_of_1], 2, "2 starts after 1");
-    assert_eq!(result[number_of_1 + number_of_2], 3, "3 starts after 2");
-    assert_eq!(
-        result[number_of_1 + number_of_2 + number_of_3],
-        4,
-        "4 starts after 3"
-    );
+    original_input_vec.sort();
+    assert_eq!(result, original_input_vec, "sorted");
 }
 
+#[test]
 fn radix_reorder_with_bigger_than_16() {
     let h = GpuTestHarness::new();
 
@@ -313,6 +288,7 @@ fn radix_reorder_with_bigger_than_16() {
     original_input_vec.extend(vec![16u32; 10]);
     original_input_vec.extend(vec![26u32; 10]);
     original_input_vec.extend(vec![36u32; 10]);
+    original_input_vec.extend(vec![7; 3584]);
 
     let mut rng = rand::rng();
     original_input_vec.shuffle(&mut rng);
@@ -332,8 +308,10 @@ fn radix_reorder_with_bigger_than_16() {
     let prefix_sums = &h.storage_buf(&prefix_sums_vec);
 
     let original_input = &h.storage_buf(&original_input_vec);
-    let output_vec = vec![0; prefix_sums_vec.len()];
+    let output_vec = vec![0; original_input_vec.len()];
     let output = &h.storage_buf(&output_vec);
+    let scratch_size = 64 * elements_per_thread_value as usize;
+    let debug_scratch_buf = h.zeroed_buf(scratch_size * number_of_wgs);
     println!("input before step {:?}", original_input_vec);
 
     let step = ComputeStep::new(
@@ -344,20 +322,24 @@ fn radix_reorder_with_bigger_than_16() {
             buf_entry(0, prefix_sums),
             buf_entry(1, original_input),
             buf_entry(2, output),
+            buf_entry(3, &debug_scratch_buf),
         ],
         number_of_wgs as u32,
         None,
     );
     h.run_step(&step);
     let result = h.readback(&output);
+    let debug_scratch = h.readback(&debug_scratch_buf);
     println!("input {:?}", original_input_vec);
     println!("prefix {:?}", prefix_sums_vec);
+    for wg in 0..number_of_wgs {
+        println!(
+            "scratch[wg={}] {:?}",
+            wg,
+            &debug_scratch[wg * scratch_size..(wg + 1) * scratch_size]
+        );
+    }
     println!("result {:?}", result);
-    assert_eq!(result[0], 1, "first number is 1");
-    assert_eq!(result[111], 1, "112 1s");
-    assert_eq!(result[112], 2, "113 = 2");
-    assert_eq!(result[212], 2, "101 2s");
-    assert_eq!(result[213], 3, "214 = 3");
-    assert_eq!(result[501], 26, "last - 10 = 26");
-    assert_eq!(result[511], 36, "last = 36");
+    original_input_vec.sort();
+    assert_eq!(result, original_input_vec, "sorted");
 }

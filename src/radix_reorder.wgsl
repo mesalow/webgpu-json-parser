@@ -11,6 +11,8 @@ var<workgroup> per_thread_local_hist: array<array<u32, 64>, 16>; // we want to s
 // we do not save the full 256 bit counter but two 16 bit counters -> 16bit * 64 threads * 4 bytes = 4kb
 
 var<workgroup> scratch: array<u32, 1024>; 
+var<workgroup> scratch2: array<u32, 1024>; 
+var<workgroup> workgroup_byte_hist: array<atomic<u32>, 256>; 
 
 fn linearize_workgroup_id(wid: vec3<u32>, num_wg: vec3<u32>) -> u32 {
     // linear = x + y*X + z*(X*Y)
@@ -43,6 +45,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
         let index = global_thread_index + i;
         if index < arrayLength(&original_input) {
             let input = original_input[index];
+            let full_byte_index = input & 0xFF;
+            atomicAdd(&workgroup_byte_hist[full_byte_index],1u);
             let low_nibble_index = input & 0x0F;
             per_thread_local_hist[low_nibble_index][lid.x]++;
         }
@@ -59,16 +63,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             }
         }
     }
+
+    // use another thread to accumulate the byte prefix scan
+    if lid.x == 1 {
+        var acc = 0u;
+        for (var d = 0u; d < 256u; d++) {
+            let current = workgroup_byte_hist[d];
+            workgroup_byte_hist[d] = acc;
+            acc += current;
+        }
+    }
+
     workgroupBarrier();
 
-    var local_counter = array<u32, 16>(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0);
+    var local_nibble_counter = array<u32, 16>(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0);
     for (var i: u32 = 0u; i < ELEMENTS_PER_THREAD; i++) {
         let index = global_thread_index + i;
         if index < arrayLength(&original_input) {
             let input = original_input[index];
             let low_nibble_index = input & 0x0F;
-            let local_offset = per_thread_local_hist[low_nibble_index][lid.x] + local_counter[low_nibble_index];
-            local_counter[low_nibble_index]++;
+            let local_offset = per_thread_local_hist[low_nibble_index][lid.x] + local_nibble_counter[low_nibble_index];
+            local_nibble_counter[low_nibble_index]++;
             scratch[local_offset] = input;
         }
     }
@@ -80,6 +95,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
         debug_scratch[workgroup_id * WORKGROUP_SIZE * ELEMENTS_PER_THREAD + scratch_idx] = scratch[scratch_idx];
     }
     workgroupBarrier();
+ 
+    //this is the second 4bit pass which we now replace with a per byte histogram and then scatter in sequence 
+   // might want to revisit this approach from the Introduction paper here
+
     // reset local hist
     for (var d = 0u; d < 16u; d++) {
         per_thread_local_hist[d][lid.x] = 0u;
@@ -88,7 +107,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     workgroupBarrier();
 
     let scratch_size = WORKGROUP_SIZE * ELEMENTS_PER_THREAD;
-     // build per-thread histogram: per_thread_local_hist[digit][thread]
+
+   // build per-thread histogram: per_thread_local_hist[digit][thread]
     for (var i: u32 = 0u; i < ELEMENTS_PER_THREAD; i++) {
         let index = lid.x * ELEMENTS_PER_THREAD + i;
         if index < scratch_size {
@@ -111,17 +131,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     }
     workgroupBarrier();
 
-    var local_counter_2 = array<u32, 16>(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0);
+    var local_nibble_counter_2 = array<u32, 16>(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0);
+
     for (var i: u32 = 0u; i < ELEMENTS_PER_THREAD; i++) {
-        let index = lid.x * ELEMENTS_PER_THREAD + i;
+        let index = lid.x * ELEMENTS_PER_THREAD + i; // here we want to index into threads which is 0..ELEMENTS_PER*THREAD * WORKGROUP_SIZE
         if index < scratch_size {
-            let input = scratch[index]; // scratch contains per-workgroup-sorted original inputs
-            let global_offset = prefix_sums[(input & 0xFF) * total_number_of_workgroups + workgroup_id]; // number of times digits < current have occured in all workgroups and number of times the digit in question occured in workgroups before this one
+            let input = scratch[index];
             let high_nibble_index = (input >> 4u) & 0x0F;
-            let local_offset = per_thread_local_hist[high_nibble_index][lid.x] + local_counter_2[high_nibble_index]; // number of times lesser nibbles occured in all threads + number of times this nibble occured in threads before that one + local_counter for current thread (how often did we see this nibble already)
-            local_counter_2[high_nibble_index]++;
-            
-            output[global_offset+local_offset] = input; 
+            let local_offset = per_thread_local_hist[high_nibble_index][lid.x] + local_nibble_counter_2[high_nibble_index];
+            local_nibble_counter_2[high_nibble_index]++;
+            scratch2[local_offset] = input;
         }
     }
+    workgroupBarrier(); 
+
+    // global scatter: for now, only do it in one thread to avoid concurrency issues
+    // can we do it in parallel actually? go back to the introduction paper to find out
+    if lid.x == 0 {
+
+        for (var i: u32 = 0u; i < WORKGROUP_SIZE * ELEMENTS_PER_THREAD; i++) {
+            let input = scratch2[i];
+            let full_byte_index = input & 0xFF;
+            let global_offset = prefix_sums[full_byte_index * total_number_of_workgroups + workgroup_id];
+            let end_offset = global_offset + i - workgroup_byte_hist[full_byte_index]; // just adding i is wrong as it goes just through the scratch. It needs to reset after each full_byte jump, e.g. if index is 40 and the input is 2 it would need to know the prefix for 2 in this workgroup (let's say 35), and then it would need to add 5 (40-35) instead of 40 to the global offset
+            // problem is how to get that prefix = we get it from the workgroup_byte_hist
+            output[end_offset] = input;
+        }
+    }
+        
+
 }
