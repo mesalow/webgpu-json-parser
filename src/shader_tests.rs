@@ -226,12 +226,13 @@ fn radix_reorder_normal() {
     );
     let prefix_sums = &h.storage_buf(&prefix_sums_vec);
 
+    let input_values_vec: Vec<u32> = original_input_vec.iter().map(|&v| v * 1000).collect();
     let original_input = &h.storage_buf(&original_input_vec);
+    let input_values = &h.storage_buf(&input_values_vec);
     let output_vec = vec![0; original_input_vec.len()];
     let output = &h.storage_buf(&output_vec);
     let scratch_size = 64 * elements_per_thread_value as usize;
     let debug_scratch_buf = h.zeroed_buf(scratch_size * number_of_wgs);
-    println!("input before step {:?}", original_input_vec);
 
     let step = ComputeStep::new(
         &h.device,
@@ -242,25 +243,17 @@ fn radix_reorder_normal() {
             buf_entry(1, original_input),
             buf_entry(2, output),
             buf_entry(3, &debug_scratch_buf),
+            buf_entry(4, input_values),
         ],
         number_of_wgs as u32,
         None,
     );
     h.run_step(&step);
     let result = h.readback(&output);
-    let debug_scratch = h.readback(&debug_scratch_buf);
-    println!("input {:?}", original_input_vec);
-    println!("prefix {:?}", prefix_sums_vec);
-    for wg in 0..number_of_wgs {
-        println!(
-            "scratch[wg={}] {:?}",
-            wg,
-            &debug_scratch[wg * scratch_size..(wg + 1) * scratch_size]
-        );
-    }
-    println!("result {:?}", result);
+
     original_input_vec.sort();
-    assert_eq!(result, original_input_vec, "sorted");
+    let expected: Vec<u32> = original_input_vec.iter().map(|&v| v * 1000).collect();
+    assert_eq!(result, expected, "values sorted by key order");
 }
 
 #[test]
@@ -307,12 +300,13 @@ fn radix_reorder_with_bigger_than_16() {
     );
     let prefix_sums = &h.storage_buf(&prefix_sums_vec);
 
+    let input_values_vec: Vec<u32> = original_input_vec.iter().map(|&v| v * 1000).collect();
     let original_input = &h.storage_buf(&original_input_vec);
+    let input_values = &h.storage_buf(&input_values_vec);
     let output_vec = vec![0; original_input_vec.len()];
     let output = &h.storage_buf(&output_vec);
     let scratch_size = 64 * elements_per_thread_value as usize;
     let debug_scratch_buf = h.zeroed_buf(scratch_size * number_of_wgs);
-    println!("input before step {:?}", original_input_vec);
 
     let step = ComputeStep::new(
         &h.device,
@@ -323,23 +317,15 @@ fn radix_reorder_with_bigger_than_16() {
             buf_entry(1, original_input),
             buf_entry(2, output),
             buf_entry(3, &debug_scratch_buf),
+            buf_entry(4, input_values),
         ],
         number_of_wgs as u32,
         None,
     );
     h.run_step(&step);
     let result = h.readback(&output);
-    let debug_scratch = h.readback(&debug_scratch_buf);
-    println!("input {:?}", original_input_vec);
-    println!("prefix {:?}", prefix_sums_vec);
-    for wg in 0..number_of_wgs {
-        println!(
-            "scratch[wg={}] {:?}",
-            wg,
-            &debug_scratch[wg * scratch_size..(wg + 1) * scratch_size]
-        );
-    }
-    println!("result {:?}", result);
+
     original_input_vec.sort();
-    assert_eq!(result, original_input_vec, "sorted");
+    let expected: Vec<u32> = original_input_vec.iter().map(|&v| v * 1000).collect();
+    assert_eq!(result, expected, "values sorted by key order");
 }

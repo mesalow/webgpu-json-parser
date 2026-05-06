@@ -2,6 +2,7 @@
 @group(0) @binding(1) var<storage, read> original_input: array<u32>;
 @group(0) @binding(2) var<storage, read_write> output: array<u32>; // TODO: pass this based on target workgroups from rust side
 @group(0) @binding(3) var<storage, read_write> debug_scratch: array<u32>; // scratch_size * num_workgroups
+@group(0) @binding(4) var<storage, read> input_values: array<u32>; // values paired with original_input keys; reordered alongside keys
 
 const ELEMENTS_PER_THREAD: u32 = 16;
 const WORKGROUP_SIZE: u32 = 64;
@@ -10,8 +11,10 @@ var<workgroup> per_thread_local_hist: array<array<u32, 64>, 16>; // we want to s
 // again from paper https://gpuopen.com/download/Introduction_to_GPU_Radix_Sort.pdf we employ the idea to split the sort up into two passes
 // we do not save the full 256 bit counter but two 16 bit counters -> 16bit * 64 threads * 4 bytes = 4kb
 
-var<workgroup> scratch: array<u32, 1024>; 
-var<workgroup> scratch2: array<u32, 1024>; 
+var<workgroup> scratch: array<u32, 1024>;
+var<workgroup> scratch2: array<u32, 1024>;
+var<workgroup> scratch_values: array<u32, 1024>;
+var<workgroup> scratch2_values: array<u32, 1024>;
 var<workgroup> workgroup_byte_hist: array<atomic<u32>, 256>; 
 
 fn linearize_workgroup_id(wid: vec3<u32>, num_wg: vec3<u32>) -> u32 {
@@ -85,6 +88,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             let local_offset = per_thread_local_hist[low_nibble_index][lid.x] + local_nibble_counter[low_nibble_index];
             local_nibble_counter[low_nibble_index]++;
             scratch[local_offset] = input;
+            scratch_values[local_offset] = input_values[index];
         }
     }
 
@@ -141,6 +145,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             let local_offset = per_thread_local_hist[high_nibble_index][lid.x] + local_nibble_counter_2[high_nibble_index];
             local_nibble_counter_2[high_nibble_index]++;
             scratch2[local_offset] = input;
+            scratch2_values[local_offset] = scratch_values[index];
         }
     }
     workgroupBarrier(); 
@@ -155,7 +160,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
             let global_offset = prefix_sums[full_byte_index * total_number_of_workgroups + workgroup_id];
             let end_offset = global_offset + i - workgroup_byte_hist[full_byte_index]; // just adding i is wrong as it goes just through the scratch. It needs to reset after each full_byte jump, e.g. if index is 40 and the input is 2 it would need to know the prefix for 2 in this workgroup (let's say 35), and then it would need to add 5 (40-35) instead of 40 to the global offset
             // problem is how to get that prefix = we get it from the workgroup_byte_hist
-            output[end_offset] = input;
+            output[end_offset] = scratch2_values[i];
         }
     }
         
