@@ -1,6 +1,6 @@
 use wgpu::{self, util::DeviceExt, Buffer, BufferUsages, Device, Maintain, MapMode, Queue};
 
-use crate::compute_step::ComputeStep;
+use crate::{compute_step::ComputeStep, ComputeStepTrait};
 
 pub struct GpuTestHarness {
     pub device: Device,
@@ -41,33 +41,36 @@ impl GpuTestHarness {
 
     /// Storage buffer initialized with `data`, readable by GPU and copyable to staging.
     pub fn storage_buf(&self, data: &[u32]) -> Buffer {
-        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(data),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        })
+        self.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(data),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            })
     }
 
     /// Zero-filled storage buffer of `count` u32s.
     pub fn zeroed_buf(&self, count: usize) -> Buffer {
-        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&vec![0u32; count]),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        })
+        self.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&vec![0u32; count]),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            })
     }
 
     /// Single-u32 storage buffer — convenient for uniforms passed as storage bindings.
     pub fn scalar_buf(&self, value: u32) -> Buffer {
-        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::bytes_of(&value),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        })
+        self.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::bytes_of(&value),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            })
     }
 
     /// Dispatch a compute step and wait for the GPU to finish.
-    pub fn run_step(&self, step: &ComputeStep) {
+    pub fn run_step<T: ComputeStepTrait>(&self, step: &T) {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());

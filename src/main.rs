@@ -1,5 +1,6 @@
 mod compute_step;
 mod prefix_scan;
+mod radix_sort_by_key;
 mod utils;
 
 #[cfg(test)]
@@ -9,7 +10,7 @@ mod test_harness;
 
 use compute_step::ComputeStep;
 use utils::{buf_entry, zeroed_storage_buf};
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, ComputePass};
 
 use crate::{prefix_scan::PrefixScan, utils::create_u32_buf};
 
@@ -360,4 +361,8 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     staging_buf.unmap();
 
     Ok(result)
+}
+
+pub trait ComputeStepTrait {
+    fn dispatch(&self, pass: &mut ComputePass);
 }

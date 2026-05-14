@@ -4,6 +4,8 @@ use wgpu::{
     BindGroup, BindGroupEntry, ComputePass, ComputePipeline, Device, PipelineCompilationOptions,
 };
 
+use crate::ComputeStepTrait;
+
 pub struct ComputeStep {
     pipeline: ComputePipeline,
     bind_group: BindGroup,
@@ -52,8 +54,10 @@ impl ComputeStep {
             workgroups,
         }
     }
+}
 
-    pub fn dispatch(&self, pass: &mut ComputePass) {
+impl ComputeStepTrait for ComputeStep {
+    fn dispatch(&self, pass: &mut ComputePass) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.dispatch_workgroups(self.workgroups, 1, 1);

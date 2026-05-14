@@ -2,6 +2,8 @@
 
 use wgpu::{BindGroup, Buffer, ComputePass, ComputePipeline, Device};
 
+use crate::ComputeStepTrait;
+
 fn split_dispatch_3d(workgroups_needed: u32, max_dim: u32) -> [u32; 3] {
     let x = workgroups_needed.min(max_dim);
     let remaining_after_x = (workgroups_needed + x - 1) / x;
@@ -27,7 +29,7 @@ pub struct PrefixScan {
 
 impl PrefixScan {
     pub fn new(device: &Device, input_buf: Buffer) -> PrefixScan {
-        let numbers_to_sum = input_buf.size() as usize / 4;
+        let numbers_to_sum = input_buf.size() as usize / size_of::<u32>();
 
         let block_scan_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("block-scan shader"),
@@ -78,6 +80,9 @@ impl PrefixScan {
         let mut i = 1;
         while level_elms > TILE_SIZE {
             elements_per_level.push(level_elms as u32);
+            // at the end of the while block we set level_elms = num_blocks
+            // so if at first level we have 2^20 elements, we divide by 2^6 here (TILE_SIZE = 64)
+            // next level will handle 2^14, then 2^8 elements
             let num_blocks = level_elms.div_ceil(TILE_SIZE).max(1);
             let sum_bytes = (num_blocks * size_of::<u32>()) as u64;
             data_buffers.push(device.create_buffer(&wgpu::BufferDescriptor {
@@ -154,7 +159,14 @@ impl PrefixScan {
             max_dimensions: device.limits().max_compute_workgroups_per_dimension,
         }
     }
-    pub fn dispatch(&self, pass: &mut ComputePass) {
+
+    pub fn result_buf(&self) -> &Buffer {
+        &self.data_buffers[0]
+    }
+}
+
+impl ComputeStepTrait for PrefixScan {
+    fn dispatch(&self, pass: &mut ComputePass) {
         const WG_SIZE: u32 = 64;
 
         pass.set_pipeline(&self.pipeline_write_sum);
@@ -189,9 +201,5 @@ impl PrefixScan {
             let [x, y, z] = split_dispatch_3d(workgroups_needed, self.max_dimensions);
             pass.dispatch_workgroups(x, y, z);
         }
-    }
-
-    pub fn result_buf(&self) -> &Buffer {
-        &self.data_buffers[0]
     }
 }
