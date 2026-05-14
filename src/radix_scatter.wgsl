@@ -1,8 +1,8 @@
 @group(0) @binding(0) var<storage, read> prefix_sums: array<u32>;
 @group(0) @binding(1) var<storage, read> original_input: array<u32>;
-@group(0) @binding(2) var<storage, read_write> output: array<u32>; // TODO: pass this based on target workgroups from rust side
-@group(0) @binding(3) var<storage, read_write> debug_scratch: array<u32>; // scratch_size * num_workgroups
-@group(0) @binding(4) var<storage, read> input_values: array<u32>; // values paired with original_input keys; reordered alongside keys
+@group(0) @binding(2) var<storage, read> input_values: array<u32>; // values paired with original_input keys; reordered alongside keys
+@group(0) @binding(3) var<storage, read_write> output: array<u32>; // TODO: pass this based on target workgroups from rust side
+@group(0) @binding(4) var<storage, read_write> debug_scratch: array<u32>; // scratch_size * num_workgroups
 
 const ELEMENTS_PER_THREAD: u32 = 16;
 const WORKGROUP_SIZE: u32 = 64;
