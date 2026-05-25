@@ -10,9 +10,9 @@ mod test_harness;
 
 use compute_step::ComputeStep;
 use utils::{buf_entry, zeroed_storage_buf};
-use wgpu::{util::DeviceExt, ComputePass};
+use wgpu::{util::DeviceExt, Buffer, ComputePass};
 
-use crate::{prefix_scan::PrefixScan, utils::create_u32_buf};
+use crate::{prefix_scan::PrefixScan, radix_sort_by_key::RadixSortByKey};
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -25,7 +25,7 @@ const STEP4_1: &str = include_str!("step4_1.wgsl");
 const STEP4_3: &str = include_str!("step4_3.wgsl");
 
 const PARSE_STEP1_1: &str = include_str!("parse_step1_1.wgsl");
-const RADIX_HIST: &str = include_str!("radix_histogram.wgsl");
+const EXPAND: &str = include_str!("expand.wgsl");
 
 // tweak this empirically or based on input size even
 const RADIX_SORT_TARGET_SORT_WORKGROUPS: u32 = 512;
@@ -157,17 +157,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     let depth_array = zeroed_storage_buf(&device, "depth_array", bytes.len());
 
     // step2: radix sort of the depths
-    let global_hist = zeroed_storage_buf(
-        &device,
-        "depth_array",
-        (number_of_radix_sort_workgroups * 256).try_into()?, // TODO: better handling of usize here, should be ok always
-    );
-    let pass_index = create_u32_buf(&device, "pass-index", 1u32);
-    let elements_per_thread = create_u32_buf(
-        &device,
-        "elements_per_thread",
-        radix_sort_elements_per_thread,
-    );
+    // will be done inside RadixSortbyKeys
 
     // final output
     let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -213,7 +203,8 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         number_of_workgroups,
         None,
     );
-    let prefix_scan_quotes = PrefixScan::new(&device, per_word_quote_count);
+    let mut prefix_scan_quotes = PrefixScan::new(&device, per_word_quote_count);
+    let quote_prefix_buf = prefix_scan_quotes.take_result();
 
     let step3_1 = ComputeStep::new(
         &device,
@@ -221,7 +212,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         "step3_1",
         &[
             buf_entry(0, &bitmap_quote_final),
-            buf_entry(1, &prefix_scan_quotes.result_buf()),
+            buf_entry(1, &quote_prefix_buf),
         ],
         number_of_workgroups,
         None,
@@ -237,7 +228,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         "step3_3",
         &[
             buf_entry(0, &bitmap_quote_final),
-            buf_entry(1, &prefix_scan_quotes.result_buf()),
+            buf_entry(1, &quote_prefix_buf),
             buf_entry(2, &string_mask),
         ],
         number_of_workgroups,
@@ -261,16 +252,18 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     );
     let steps3_to_4 = vec![step3_3, step4_1];
 
-    let prefix_scan_structural = PrefixScan::new(&device, count_structural);
-    let prefix_scan_open_close = PrefixScan::new(&device, count_open_close);
+    let mut prefix_scan_structural = PrefixScan::new(&device, count_structural);
+    let mut prefix_scan_open_close = PrefixScan::new(&device, count_open_close);
+    let structural_prefix_buf = prefix_scan_structural.take_result();
+    let open_close_prefix_buf = prefix_scan_open_close.take_result();
 
     let step4_3 = ComputeStep::new(
         &device,
         STEP4_3,
         "step4_3",
         &[
-            buf_entry(0, &prefix_scan_open_close.result_buf()),
-            buf_entry(1, &prefix_scan_structural.result_buf()),
+            buf_entry(0, &open_close_prefix_buf),
+            buf_entry(1, &structural_prefix_buf),
             buf_entry(2, &bitmap_open_close),
             buf_entry(3, &input_buf),
             buf_entry(4, &bitmap_structural),
@@ -285,14 +278,15 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     );
 
     // parser
-    let prefix_scan_depth = PrefixScan::new(&device, open_close_chars_mapped);
+    let mut prefix_scan_depth = PrefixScan::new(&device, open_close_chars_mapped);
+    let depth_prefix_buf = prefix_scan_depth.take_result();
 
     let parser_step1_1 = ComputeStep::new(
         &device,
         PARSE_STEP1_1,
         "parser_step1_1",
         &[
-            buf_entry(0, prefix_scan_depth.result_buf()),
+            buf_entry(0, &depth_prefix_buf),
             buf_entry(1, &open_close_chars_mapped_for_parser),
             buf_entry(2, &depth_array),
         ],
@@ -300,20 +294,24 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         None,
     );
 
-    let radix_sort_step_hist = ComputeStep::new(
+    let mut radix_sort_scan = RadixSortByKey::new(
         &device,
-        RADIX_HIST,
-        "radix_sort_hist",
-        &[
-            buf_entry(0, &depth_array),
-            buf_entry(1, &pass_index),
-            buf_entry(3, &global_hist),
-        ],
-        number_of_radix_sort_workgroups,
-        None,
+        depth_array,
+        open_close_chars_mapped_for_parser,
+        number_of_radix_sort_workgroups as usize,
+        bytes.len(),
     );
 
-    let radix_sort_prefix_scan = PrefixScan::new(&device, global_hist);
+    let sorted_oc_indexes = radix_sort_scan.take_result();
+    let output_buf = zeroed_storage_buf(&device, "expanded_output", bytes.len());
+    let expand = ComputeStep::new(
+        &device,
+        EXPAND,
+        "expand_step",
+        &[buf_entry(0, &sorted_oc_indexes), buf_entry(1, &output_buf)],
+        number_of_workgroups,
+        None,
+    );
 
     // ── 4. Encode & submit ───────────────────────────────────────────────────
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -335,15 +333,15 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         prefix_scan_structural.dispatch(&mut pass);
         prefix_scan_open_close.dispatch(&mut pass);
 
-        step4_3.dispatch((&mut pass));
+        step4_3.dispatch(&mut pass);
 
         parser_step1_1.dispatch(&mut pass);
 
-        radix_sort_step_hist.dispatch(&mut pass);
-        radix_sort_prefix_scan.dispatch(&mut pass);
+        radix_sort_scan.dispatch(&mut pass);
+        expand.dispatch(&mut pass);
     } // pass dropped here, encoder unlocked
 
-    encoder.copy_buffer_to_buffer(&structural_index, 0, &staging_buf, 0, output_size);
+    encoder.copy_buffer_to_buffer(&output_buf, 0, &staging_buf, 0, output_size);
 
     queue.submit(std::iter::once(encoder.finish()));
 
@@ -365,4 +363,8 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
 
 pub trait ComputeStepTrait {
     fn dispatch(&self, pass: &mut ComputePass);
+    /// Move the step's output buffer out. Single-shot: panics if called twice.
+    /// The step's bind groups internally retain the buffer for GPU use, so
+    /// dispatch is still valid after taking the result.
+    fn take_result(&mut self) -> Buffer;
 }
