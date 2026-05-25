@@ -1,6 +1,6 @@
 use wgpu::{self, util::DeviceExt, Buffer, BufferUsages, Device, Maintain, MapMode, Queue};
 
-use crate::{compute_step::ComputeStep, ComputeStepTrait};
+use crate::ComputeStepTrait;
 
 pub struct GpuTestHarness {
     pub device: Device,
@@ -78,6 +78,12 @@ impl GpuTestHarness {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.device.poll(Maintain::Wait);
+    }
+
+    /// Dispatch, then read back the step's result buffer. Consumes the step's result.
+    pub fn run_and_readback<T: ComputeStepTrait>(&self, step: &mut T) -> Vec<u32> {
+        self.run_step(step);
+        self.readback(&step.take_result())
     }
 
     /// Copy a storage buffer back to the CPU and return its contents as `Vec<u32>`.

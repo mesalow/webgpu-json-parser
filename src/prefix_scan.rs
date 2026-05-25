@@ -22,7 +22,8 @@ pub struct PrefixScan {
     bind_groups_write_sum: Vec<BindGroup>,
     bind_group_no_sum: BindGroup,
     bind_groups_add_carry: Vec<BindGroup>,
-    data_buffers: Vec<Buffer>,
+    input_buf: Option<Buffer>,
+    num_levels: usize,
     elements_per_level: Vec<u32>,
     max_dimensions: u32,
 }
@@ -147,6 +148,13 @@ impl PrefixScan {
             }));
         }
 
+        // Move the original input buffer out so it can be returned to the caller.
+        // Intermediate block-sum buffers are retained by the bind groups; we don't
+        // need separate handles to them on the CPU side.
+        let num_levels = data_buffers.len();
+        let mut buf_iter = data_buffers.into_iter();
+        let input_buf = buf_iter.next();
+
         Self {
             pipeline_add_carry,
             pipeline_no_sum,
@@ -154,18 +162,19 @@ impl PrefixScan {
             bind_group_no_sum,
             bind_groups_add_carry,
             bind_groups_write_sum,
-            data_buffers,
+            input_buf,
+            num_levels,
             elements_per_level,
             max_dimensions: device.limits().max_compute_workgroups_per_dimension,
         }
     }
-
-    pub fn result_buf(&self) -> &Buffer {
-        &self.data_buffers[0]
-    }
 }
 
 impl ComputeStepTrait for PrefixScan {
+    fn take_result(&mut self) -> Buffer {
+        self.input_buf.take().expect("result buffer already taken")
+    }
+
     fn dispatch(&self, pass: &mut ComputePass) {
         const WG_SIZE: u32 = 64;
 
@@ -192,8 +201,8 @@ impl ComputeStepTrait for PrefixScan {
 
         // add carry to the previous data
         pass.set_pipeline(&self.pipeline_add_carry);
-        for level in (1..self.data_buffers.len()).rev() {
-            let bind_group = &self.bind_groups_add_carry[self.data_buffers.len() - 1 - level];
+        for level in (1..self.num_levels).rev() {
+            let bind_group = &self.bind_groups_add_carry[self.num_levels - 1 - level];
             let block_len = self.elements_per_level[level - 1];
             let workgroups_needed = block_len.div_ceil(WG_SIZE).max(1);
 

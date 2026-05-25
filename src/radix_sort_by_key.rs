@@ -1,10 +1,4 @@
-use core::num;
-
-use wgpu::{
-    util::BufferInitDescriptor, BindGroup, BindGroupDescriptor, Buffer, BufferDescriptor,
-    ComputePass, ComputePipeline, ComputePipelineDescriptor, Device, PipelineLayoutDescriptor,
-    ShaderModuleDescriptor,
-};
+use wgpu::{Buffer, ComputePass, Device};
 
 use crate::{
     compute_step::ComputeStep,
@@ -14,8 +8,6 @@ use crate::{
 };
 
 pub struct RadixSortByKey {
-    input_keys: Buffer,
-    input_values: Buffer,
     histogram_step: ComputeStep,
     prefix_scan_step: PrefixScan,
     scatter_step: ComputeStep,
@@ -27,17 +19,18 @@ impl RadixSortByKey {
         input_keys: Buffer,
         input_values: Buffer,
         number_of_workgroups: usize,
-        scatter_output_buf: &Buffer,
+        output_len: usize,
     ) -> RadixSortByKey {
         let elements_per_thread_value = 16u32;
 
         let histogram_output_buf =
-            zeroed_storage_buf(device, "histogram_output", 256 * number_of_workgroups); // TODO: only until 256 digits
+            zeroed_storage_buf(device, "histogram_output", 256 * number_of_workgroups);
 
         let scratch_size = 64 * elements_per_thread_value as usize;
-
         let debug_buf =
             zeroed_storage_buf(device, "debug_buf", scratch_size * number_of_workgroups);
+
+        let scatter_output_buf = zeroed_storage_buf(device, "scatter_output", output_len);
 
         let histogram_step = ComputeStep::new(
             &device,
@@ -56,14 +49,17 @@ impl RadixSortByKey {
             None,
         );
 
-        let prefix_scan_step = PrefixScan::new(device, histogram_output_buf);
+        // histogram_step's bind group retains histogram_output_buf on the GPU
+        // side, so we can hand the buffer ownership to PrefixScan.
+        let mut prefix_scan_step = PrefixScan::new(device, histogram_output_buf);
 
-        let scatter_step = ComputeStep::new(
+        let prefix_result = prefix_scan_step.take_result();
+        let mut scatter_step = ComputeStep::new(
             &device,
             include_str!("radix_scatter.wgsl").into(),
             "radix_scatter",
             &[
-                buf_entry(0, &prefix_scan_step.result_buf()),
+                buf_entry(0, &prefix_result),
                 buf_entry(1, &input_keys),
                 buf_entry(2, &input_values),
                 buf_entry(3, &scatter_output_buf),
@@ -72,9 +68,9 @@ impl RadixSortByKey {
             number_of_workgroups as u32,
             None,
         );
+        scatter_step.set_result(scatter_output_buf);
+
         RadixSortByKey {
-            input_keys,
-            input_values,
             histogram_step,
             prefix_scan_step,
             scatter_step,
@@ -86,5 +82,9 @@ impl ComputeStepTrait for RadixSortByKey {
         self.histogram_step.dispatch(pass);
         self.prefix_scan_step.dispatch(pass);
         self.scatter_step.dispatch(pass);
+    }
+
+    fn take_result(&mut self) -> Buffer {
+        self.scatter_step.take_result()
     }
 }

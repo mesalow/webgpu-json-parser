@@ -43,6 +43,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let global_thread_index = (workgroup_id * WORKGROUP_SIZE + lid.x) * ELEMENTS_PER_THREAD;
     var inner_pass_index = 0u;
 
+    // number of valid elements this workgroup owns; the rest of its 1024-slot tile is padding
+    let wg_base = workgroup_id * WORKGROUP_SIZE * ELEMENTS_PER_THREAD;
+    var n_valid = 0u;
+    if wg_base < arrayLength(&original_input) {
+        n_valid = min(WORKGROUP_SIZE * ELEMENTS_PER_THREAD, arrayLength(&original_input) - wg_base);
+    }
+
     // build per-thread histogram: per_thread_local_hist[digit][thread]
     for (var i: u32 = 0u; i < ELEMENTS_PER_THREAD; i++) {
         let index = global_thread_index + i;
@@ -71,8 +78,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     if lid.x == 1 {
         var acc = 0u;
         for (var d = 0u; d < 256u; d++) {
-            let current = workgroup_byte_hist[d];
-            workgroup_byte_hist[d] = acc;
+            let current = atomicLoad(&workgroup_byte_hist[d]);
+            atomicStore(&workgroup_byte_hist[d], acc);
             acc += current;
         }
     }
@@ -115,7 +122,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
    // build per-thread histogram: per_thread_local_hist[digit][thread]
     for (var i: u32 = 0u; i < ELEMENTS_PER_THREAD; i++) {
         let index = lid.x * ELEMENTS_PER_THREAD + i;
-        if index < scratch_size {
+        if index < n_valid {
             let input = scratch[index];
             let high_nibble_index = (input >> 4u) & 0x0F;
             per_thread_local_hist[high_nibble_index][lid.x]++;
@@ -139,7 +146,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 
     for (var i: u32 = 0u; i < ELEMENTS_PER_THREAD; i++) {
         let index = lid.x * ELEMENTS_PER_THREAD + i; // here we want to index into threads which is 0..ELEMENTS_PER*THREAD * WORKGROUP_SIZE
-        if index < scratch_size {
+        if index < n_valid {
             let input = scratch[index];
             let high_nibble_index = (input >> 4u) & 0x0F;
             let local_offset = per_thread_local_hist[high_nibble_index][lid.x] + local_nibble_counter_2[high_nibble_index];
@@ -154,11 +161,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     // can we do it in parallel actually? go back to the introduction paper to find out
     if lid.x == 0 {
 
-        for (var i: u32 = 0u; i < WORKGROUP_SIZE * ELEMENTS_PER_THREAD; i++) {
+        for (var i: u32 = 0u; i < n_valid; i++) {
             let input = scratch2[i];
             let full_byte_index = input & 0xFF;
             let global_offset = prefix_sums[full_byte_index * total_number_of_workgroups + workgroup_id];
-            let end_offset = global_offset + i - workgroup_byte_hist[full_byte_index]; // just adding i is wrong as it goes just through the scratch. It needs to reset after each full_byte jump, e.g. if index is 40 and the input is 2 it would need to know the prefix for 2 in this workgroup (let's say 35), and then it would need to add 5 (40-35) instead of 40 to the global offset
+            let end_offset = global_offset + i - atomicLoad(&workgroup_byte_hist[full_byte_index]); // just adding i is wrong as it goes just through the scratch. It needs to reset after each full_byte jump, e.g. if index is 40 and the input is 2 it would need to know the prefix for 2 in this workgroup (let's say 35), and then it would need to add 5 (40-35) instead of 40 to the global offset
             // problem is how to get that prefix = we get it from the workgroup_byte_hist
             output[end_offset] = scratch2_values[i];
         }

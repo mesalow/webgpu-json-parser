@@ -1,7 +1,8 @@
 use std::{collections::HashMap, hash::RandomState};
 
 use wgpu::{
-    BindGroup, BindGroupEntry, ComputePass, ComputePipeline, Device, PipelineCompilationOptions,
+    BindGroup, BindGroupEntry, Buffer, ComputePass, ComputePipeline, Device,
+    PipelineCompilationOptions,
 };
 
 use crate::ComputeStepTrait;
@@ -10,6 +11,7 @@ pub struct ComputeStep {
     pipeline: ComputePipeline,
     bind_group: BindGroup,
     workgroups: u32,
+    result_buf: Option<Buffer>,
 }
 
 impl ComputeStep {
@@ -52,7 +54,15 @@ impl ComputeStep {
             pipeline,
             bind_group,
             workgroups,
+            result_buf: None,
         }
+    }
+
+    /// Hand ownership of the step's output buffer to the step so it can be
+    /// returned via `take_result()` later. Used in tests/standalone cases;
+    /// pipelines that share a buffer across steps can skip this.
+    pub fn set_result(&mut self, buf: Buffer) {
+        self.result_buf = Some(buf);
     }
 }
 
@@ -61,5 +71,9 @@ impl ComputeStepTrait for ComputeStep {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.dispatch_workgroups(self.workgroups, 1, 1);
+    }
+
+    fn take_result(&mut self) -> Buffer {
+        self.result_buf.take().expect("result buffer already taken")
     }
 }
