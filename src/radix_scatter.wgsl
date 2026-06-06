@@ -1,8 +1,9 @@
 @group(0) @binding(0) var<storage, read> prefix_sums: array<u32>;
 @group(0) @binding(1) var<storage, read> original_input: array<u32>;
 @group(0) @binding(2) var<storage, read> input_values: array<u32>; // values paired with original_input keys; reordered alongside keys
-@group(0) @binding(3) var<storage, read_write> output: array<u32>; // TODO: pass this based on target workgroups from rust side
-@group(0) @binding(4) var<storage, read_write> debug_scratch: array<u32>; // scratch_size * num_workgroups
+@group(0) @binding(3) var<storage, read> num_of_values: u32;
+@group(0) @binding(4) var<storage, read_write> output: array<u32>; // TODO: pass this based on target workgroups from rust side
+@group(0) @binding(5) var<storage, read_write> debug_scratch: array<u32>; // scratch_size * num_workgroups
 
 const ELEMENTS_PER_THREAD: u32 = 16;
 const WORKGROUP_SIZE: u32 = 64;
@@ -46,14 +47,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     // number of valid elements this workgroup owns; the rest of its 1024-slot tile is padding
     let wg_base = workgroup_id * WORKGROUP_SIZE * ELEMENTS_PER_THREAD;
     var n_valid = 0u;
-    if wg_base < arrayLength(&original_input) {
-        n_valid = min(WORKGROUP_SIZE * ELEMENTS_PER_THREAD, arrayLength(&original_input) - wg_base);
+    if wg_base < num_of_values {
+        n_valid = min(WORKGROUP_SIZE * ELEMENTS_PER_THREAD, num_of_values - wg_base);
     }
 
     // build per-thread histogram: per_thread_local_hist[digit][thread]
     for (var i: u32 = 0u; i < ELEMENTS_PER_THREAD; i++) {
         let index = global_thread_index + i;
-        if index < arrayLength(&original_input) {
+        if index < num_of_values {
             let input = original_input[index];
             let full_byte_index = input & 0xFF;
             atomicAdd(&workgroup_byte_hist[full_byte_index],1u);
@@ -89,7 +90,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     var local_nibble_counter = array<u32, 16>(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0);
     for (var i: u32 = 0u; i < ELEMENTS_PER_THREAD; i++) {
         let index = global_thread_index + i;
-        if index < arrayLength(&original_input) {
+        if index < num_of_values {
             let input = original_input[index];
             let low_nibble_index = input & 0x0F;
             let local_offset = per_thread_local_hist[low_nibble_index][lid.x] + local_nibble_counter[low_nibble_index];

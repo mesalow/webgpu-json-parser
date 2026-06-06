@@ -23,6 +23,7 @@ pub struct PrefixScan {
     bind_group_no_sum: BindGroup,
     bind_groups_add_carry: Vec<BindGroup>,
     input_buf: Option<Buffer>,
+    debug_levels: Vec<Buffer>,
     num_levels: usize,
     elements_per_level: Vec<u32>,
     max_dimensions: u32,
@@ -154,6 +155,9 @@ impl PrefixScan {
         let num_levels = data_buffers.len();
         let mut buf_iter = data_buffers.into_iter();
         let input_buf = buf_iter.next();
+        // Keep the intermediate block-sum levels (previously dropped) so they
+        // stay reachable for debugging. level0 is handed back via take_result.
+        let debug_levels: Vec<Buffer> = buf_iter.collect();
 
         Self {
             pipeline_add_carry,
@@ -163,6 +167,7 @@ impl PrefixScan {
             bind_groups_add_carry,
             bind_groups_write_sum,
             input_buf,
+            debug_levels,
             num_levels,
             elements_per_level,
             max_dimensions: device.limits().max_compute_workgroups_per_dimension,
@@ -173,6 +178,16 @@ impl PrefixScan {
 impl ComputeStepTrait for PrefixScan {
     fn take_result(&mut self) -> Buffer {
         self.input_buf.take().expect("result buffer already taken")
+    }
+
+    fn debug_buffers(&self) -> Vec<(String, &Buffer)> {
+        // level0 (the scanned result) is owned by the caller via take_result;
+        // these are the intermediate block-sum levels.
+        self.debug_levels
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (format!("level{}", i + 1), b))
+            .collect()
     }
 
     fn dispatch(&self, pass: &mut ComputePass) {

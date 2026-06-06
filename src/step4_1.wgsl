@@ -3,6 +3,7 @@
 @group(0) @binding(2) var<storage, read> string_mask: array<u32>;
 @group(0) @binding(3) var<storage, read_write> count_structural: array<u32>;
 @group(0) @binding(4) var<storage, read_write> count_open_close: array<u32>;
+@group(0) @binding(5) var<storage, read_write> total_count_open_close: atomic<u32>; // needed for the parser step so that radix_sort can skip empty values in the buffer
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -21,5 +22,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     count_open_close[index] = countOneBits(not_in_string_open_close);
     bitmap_open_close[index] = not_in_string_open_close; // update bitmap_open_close so that it shows only the stuff we need
-
+    atomicAdd(&total_count_open_close,count_open_close[index]);
 }   

@@ -1,7 +1,8 @@
 @group(0) @binding(0) var<storage, read> input_array: array<u32>;
 @group(0) @binding(1) var<storage, read> pass_index: u32;
 @group(0) @binding(2) var<storage, read> elements_per_thread: u32; // TODO: pass this based on target workgroups from rust side
-@group(0) @binding(3) var<storage, read_write> global_hist: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read> num_of_values: u32;
+@group(0) @binding(4) var<storage, read_write> global_hist: array<atomic<u32>>;
 
 var<workgroup> local_hist: array<atomic<u32>, 256>;
 
@@ -15,18 +16,17 @@ const WORKGROUP_SIZE: u32 = 64;
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) number_of_workgroups: vec3<u32>) {
     let workgroup_id = linearize_workgroup_id(wid, number_of_workgroups);
-
     let total_number_of_workgroups = number_of_workgroups.x * number_of_workgroups.y * number_of_workgroups.z; 
 
     let base_index = (workgroup_id * WORKGROUP_SIZE + lid.x) * elements_per_thread;
-
+    
     /**
     * we limit number of workgroups per https://gpuopen.com/download/Introduction_to_GPU_Radix_Sort.pdf ->  thus we increase the number of elements scanned per thread so that each workgroup does more work 
     * the local histogram then gets "more values" per workgroup
     */
     for (var i = 0u; i< elements_per_thread; i++) {
         let index = base_index + i;
-        if index < arrayLength(&input_array) {
+        if index < num_of_values {
             let input = input_array[index];
             
             let byte_for_pass = (input >> (pass_index * 8u)) & 0xFF;

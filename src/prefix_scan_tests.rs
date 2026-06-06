@@ -104,3 +104,14 @@ fn prefix_scan_sparse_end_sentinel() {
     let expected = cpu_exclusive_scan(&input);
     assert_eq!(result, expected);
 }
+
+#[test]
+fn prefix_scan_with_negatives() {
+    let h = GpuTestHarness::new();
+    let input = vec![
+        1, 1, 4294967295, 1, 4294967295, 1, 1, 4294967295, 4294967295,
+    ];
+    let result = run_scan(&h, &input);
+    let expected = vec![0, 1, 2, 1, 2, 1, 2, 3, 2];
+    assert_eq!(result, expected);
+}

@@ -439,12 +439,70 @@ fn complete_radix_step() {
     let input_keys = h.storage_buf(&input_keys_vec);
     let input_values_len = input_values_vec.len();
     let input_values = h.storage_buf(&input_values_vec);
-    let mut radix_sort =
-        RadixSortByKey::new(&h.device, input_keys, input_values, 4, input_values_len); // TODO does not work for wg > 4 and with == 4 it fails sometimes
+    let mut radix_sort = RadixSortByKey::new(
+        &h.device,
+        input_keys,
+        input_values,
+        h.scalar_buf(10u32),
+        4,
+        input_values_len,
+    ); // TODO does not work for wg > 4 and with == 4 it fails sometimes
     let result = h.run_and_readback(&mut radix_sort);
     assert_eq!(
         result,
         vec![5, 7, 9, 12, 14, 16, 18, 20, 22, 34],
+        "correct sort"
+    );
+}
+
+#[test]
+fn complete_radix_with_small_steps() {
+    let h = GpuTestHarness::new();
+    let input_keys_vec: Vec<u32> = vec![
+        0, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 2, 2, 3, 3, 3, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0,
+    ];
+    let input_values_vec: Vec<u32> = vec![
+        0, 14, 17, 20, 23, 26, 28, 30, 33, 34, 36, 38, 40, 41, 44, 45, 47, 49, 51, 52, 53, 54, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    let input_keys = h.storage_buf(&input_keys_vec);
+    let input_values_len = input_values_vec.len();
+    let input_values = h.storage_buf(&input_values_vec);
+    let mut radix_sort = RadixSortByKey::new(
+        &h.device,
+        input_keys,
+        input_values,
+        h.scalar_buf(22u32),
+        4,
+        input_values_len,
+    ); // TODO does not work for wg > 4 and with == 4 it fails sometimes
+    let result = h.run_and_readback(&mut radix_sort);
+    assert_eq!(
+        result,
+        vec![
+            0, 54, 14, 17, 20, 23, 26, 53, 28, 30, 33, 41, 44, 52, 34, 36, 38, 40, 45, 47, 49, 51,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ],
         "correct sort"
     );
 }

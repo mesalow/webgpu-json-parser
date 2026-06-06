@@ -4,6 +4,8 @@ mod radix_sort_by_key;
 mod utils;
 
 #[cfg(test)]
+mod prefix_scan_tests;
+#[cfg(test)]
 mod shader_tests;
 #[cfg(test)]
 mod test_harness;
@@ -12,7 +14,7 @@ use compute_step::ComputeStep;
 use utils::{buf_entry, zeroed_storage_buf};
 use wgpu::{util::DeviceExt, Buffer, ComputePass};
 
-use crate::{prefix_scan::PrefixScan, radix_sort_by_key::RadixSortByKey};
+use crate::{prefix_scan::PrefixScan, radix_sort_by_key::RadixSortByKey, utils::create_u32_buf};
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -142,6 +144,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     // step 4_1 --> count of structural + count of oc
     let count_structural = zeroed_storage_buf(&device, "count_structural", output_word_count);
     let count_open_close = zeroed_storage_buf(&device, "count_open_close", output_word_count);
+    let total_count_open_close = create_u32_buf(&device, "total_count_open_close", 0);
 
     // step 4_3 --> structural index, open-close and open-close-index
 
@@ -246,6 +249,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
             buf_entry(2, &string_mask),
             buf_entry(3, &count_structural),
             buf_entry(4, &count_open_close),
+            buf_entry(5, &total_count_open_close),
         ],
         number_of_workgroups,
         None,
@@ -297,7 +301,8 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     let mut radix_sort_scan = RadixSortByKey::new(
         &device,
         depth_array,
-        open_close_chars_mapped_for_parser,
+        open_close_index,
+        total_count_open_close,
         number_of_radix_sort_workgroups as usize,
         bytes.len(),
     );
@@ -334,7 +339,7 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
         prefix_scan_open_close.dispatch(&mut pass);
 
         step4_3.dispatch(&mut pass);
-
+        prefix_scan_depth.dispatch(&mut pass);
         parser_step1_1.dispatch(&mut pass);
 
         radix_sort_scan.dispatch(&mut pass);
@@ -344,6 +349,50 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     encoder.copy_buffer_to_buffer(&output_buf, 0, &staging_buf, 0, output_size);
 
     queue.submit(std::iter::once(encoder.finish()));
+
+    // ── Debug: `DUMP=<name> cargo run` prints one intermediate buffer ─────────
+    // Everything ran in one submit, so every buffer now holds its final value.
+    if let Ok(want) = std::env::var("DUMP") {
+        let mut registry: Vec<(String, &Buffer)> = vec![
+            ("input".into(), &input_buf),
+            ("bitmap_structural".into(), &bitmap_structural),
+            ("bitmap_backslash".into(), &bitmap_backslash),
+            ("bitmap_quote".into(), &bitmap_quote),
+            ("bitmap_open_close".into(), &bitmap_open_close),
+            ("bitmap_quote_final".into(), &bitmap_quote_final),
+            ("quote_prefix".into(), &quote_prefix_buf),
+            ("string_mask".into(), &string_mask),
+            ("structural_prefix".into(), &structural_prefix_buf),
+            ("open_close_prefix".into(), &open_close_prefix_buf),
+            ("structural_index".into(), &structural_index),
+            ("open_close_chars".into(), &open_close_chars),
+            ("depth_prefix".into(), &depth_prefix_buf),
+            ("sorted_oc_indexes".into(), &sorted_oc_indexes),
+            ("output".into(), &output_buf),
+        ];
+        // pull buffers buried inside the wrapper steps, under sub-namespaces
+        for (prefix, step) in [
+            ("quote_scan", &prefix_scan_quotes as &dyn ComputeStepTrait),
+            ("structural_scan", &prefix_scan_structural),
+            ("open_close_scan", &prefix_scan_open_close),
+            ("depth_scan", &prefix_scan_depth),
+            ("radix", &radix_sort_scan),
+        ] {
+            for (n, b) in step.debug_buffers() {
+                registry.push((format!("{prefix}.{n}"), b));
+            }
+        }
+
+        match registry.iter().find(|(n, _)| *n == want) {
+            Some((n, b)) => dump(&device, &queue, b, n),
+            None => {
+                eprintln!("DUMP: no buffer named '{want}'. Available:");
+                for (n, _) in &registry {
+                    eprintln!("  {n}");
+                }
+            }
+        }
+    }
 
     // ── 5. Read back result ──────────────────────────────────────────────────
     let slice = staging_buf.slice(..);
@@ -361,10 +410,65 @@ async fn run(json_string: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> 
     Ok(result)
 }
 
+/// Copy a storage buffer back to the CPU and print it. Self-contained: uses its
+/// own encoder + staging buffer, so it can be called any time after the buffer's
+/// producing submit has been queued. Bitmap buffers are printed as set-bit
+/// positions; everything else as a (capped) list of u32s.
+fn dump(device: &wgpu::Device, queue: &wgpu::Queue, buf: &Buffer, label: &str) {
+    let size = buf.size();
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("dump_staging"),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_buffer_to_buffer(buf, 0, &staging, 0, size);
+    queue.submit(std::iter::once(encoder.finish()));
+
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::Maintain::Wait);
+
+    let data = slice.get_mapped_range();
+    let values: Vec<u32> = bytemuck::cast_slice(&data).to_vec();
+    drop(data);
+    staging.unmap();
+
+    println!("── dump: {label} ({} u32) ──", values.len());
+    if label.contains("bitmap") {
+        let set: Vec<u32> = values
+            .iter()
+            .enumerate()
+            .flat_map(|(word_idx, word)| {
+                (0..32u32).filter_map(move |bit| {
+                    ((word >> bit) & 1 == 1).then_some(word_idx as u32 * 32 + bit)
+                })
+            })
+            .collect();
+        println!("set bits: {set:?}");
+    } else {
+        const CAP: usize = 512;
+        if values.len() > CAP {
+            println!("{:?} … (+{} more)", &values[..CAP], values.len() - CAP);
+        } else {
+            println!("{values:?}");
+        }
+    }
+}
+
 pub trait ComputeStepTrait {
     fn dispatch(&self, pass: &mut ComputePass);
     /// Move the step's output buffer out. Single-shot: panics if called twice.
     /// The step's bind groups internally retain the buffer for GPU use, so
     /// dispatch is still valid after taking the result.
     fn take_result(&mut self) -> Buffer;
+
+    /// Intermediate buffers a step wants to expose for debugging, by name.
+    /// Default: none. Wrappers that bury buffers internally override this so
+    /// they can still be inspected from the outside.
+    fn debug_buffers(&self) -> Vec<(String, &Buffer)> {
+        vec![]
+    }
 }
