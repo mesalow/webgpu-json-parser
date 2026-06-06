@@ -4,6 +4,8 @@ mod radix_sort_by_key;
 mod utils;
 
 #[cfg(test)]
+mod parser_tests;
+#[cfg(test)]
 mod shader_tests;
 #[cfg(test)]
 mod test_harness;
