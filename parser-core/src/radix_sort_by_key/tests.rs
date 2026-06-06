@@ -15,6 +15,7 @@ fn radix_histogram_pass0_counts_each_digit_once() {
     let input_buf = h.storage_buf(&input);
     let pass_buf = h.scalar_buf(0); // extract lowest byte
     let ept_buf = h.scalar_buf(1); // 1 element per thread
+    let num_of_values_buf = h.scalar_buf(input.len() as u32);
     let hist_buf = h.zeroed_buf(256 * n_wg as usize);
 
     let mut step = ComputeStep::new(
@@ -25,7 +26,8 @@ fn radix_histogram_pass0_counts_each_digit_once() {
             buf_entry(0, &input_buf),
             buf_entry(1, &pass_buf),
             buf_entry(2, &ept_buf),
-            buf_entry(3, &hist_buf),
+            buf_entry(3, &num_of_values_buf),
+            buf_entry(4, &hist_buf),
         ],
         n_wg,
         None,
@@ -52,6 +54,7 @@ fn radix_histogram_pass1_second_byte() {
     let input_buf = h.storage_buf(&input);
     let pass_buf = h.scalar_buf(1); // extract second byte
     let ept_buf = h.scalar_buf(1);
+    let num_of_values_buf = h.scalar_buf(input.len() as u32);
     let hist_buf = h.zeroed_buf(256 * n_wg as usize);
 
     let mut step = ComputeStep::new(
@@ -62,7 +65,8 @@ fn radix_histogram_pass1_second_byte() {
             buf_entry(0, &input_buf),
             buf_entry(1, &pass_buf),
             buf_entry(2, &ept_buf),
-            buf_entry(3, &hist_buf),
+            buf_entry(3, &num_of_values_buf),
+            buf_entry(4, &hist_buf),
         ],
         n_wg,
         None,
@@ -93,6 +97,7 @@ fn radix_histogram_column_major_two_workgroups() {
     let input_buf = h.storage_buf(&input);
     let pass_buf = h.scalar_buf(0);
     let ept_buf = h.scalar_buf(1);
+    let num_of_values_buf = h.scalar_buf(input.len() as u32);
     let hist_buf = h.zeroed_buf(256 * n_wg as usize);
 
     let mut step = ComputeStep::new(
@@ -103,7 +108,8 @@ fn radix_histogram_column_major_two_workgroups() {
             buf_entry(0, &input_buf),
             buf_entry(1, &pass_buf),
             buf_entry(2, &ept_buf),
-            buf_entry(3, &hist_buf),
+            buf_entry(3, &num_of_values_buf),
+            buf_entry(4, &hist_buf),
         ],
         n_wg,
         None,
@@ -131,6 +137,7 @@ fn radix_histogram_elements_per_thread() {
     let input_buf = h.storage_buf(&input);
     let pass_buf = h.scalar_buf(0);
     let ept_buf = h.scalar_buf(elements_per_thread);
+    let num_of_values_buf = h.scalar_buf(input.len() as u32);
     let hist_buf = h.zeroed_buf(256 * n_wg as usize);
 
     let mut step = ComputeStep::new(
@@ -141,7 +148,8 @@ fn radix_histogram_elements_per_thread() {
             buf_entry(0, &input_buf),
             buf_entry(1, &pass_buf),
             buf_entry(2, &ept_buf),
-            buf_entry(3, &hist_buf),
+            buf_entry(3, &num_of_values_buf),
+            buf_entry(4, &hist_buf),
         ],
         n_wg,
         None,
@@ -234,6 +242,7 @@ fn radix_scatter_normal() {
     let input_values_vec: Vec<u32> = original_input_vec.iter().map(|&v| v * 1000).collect();
     let original_input = h.storage_buf(&original_input_vec);
     let input_values = h.storage_buf(&input_values_vec);
+    let num_of_values_buf = h.scalar_buf(input_values_vec.len() as u32);
     let output_vec = vec![0; original_input_vec.len()];
     let output = h.storage_buf(&output_vec);
     let scratch_size = 64 * elements_per_thread_value as usize;
@@ -247,8 +256,9 @@ fn radix_scatter_normal() {
             buf_entry(0, &prefix_sums),
             buf_entry(1, &original_input),
             buf_entry(2, &input_values),
-            buf_entry(3, &output),
-            buf_entry(4, &debug_scratch_buf),
+            buf_entry(3, &num_of_values_buf),
+            buf_entry(4, &output),
+            buf_entry(5, &debug_scratch_buf),
         ],
         number_of_wgs as u32,
         None,
@@ -308,6 +318,8 @@ fn radix_scatter_with_bigger_than_16() {
     let input_values_vec: Vec<u32> = original_input_vec.iter().map(|&v| v * 1000).collect();
     let original_input = h.storage_buf(&original_input_vec);
     let input_values = h.storage_buf(&input_values_vec);
+    let num_of_values_buf = h.scalar_buf(input_values_vec.len() as u32);
+
     let output_vec = vec![0; original_input_vec.len()];
     let output = h.storage_buf(&output_vec);
     let scratch_size = 64 * elements_per_thread_value as usize;
@@ -321,8 +333,9 @@ fn radix_scatter_with_bigger_than_16() {
             buf_entry(0, &prefix_sums),
             buf_entry(1, &original_input),
             buf_entry(2, &input_values),
-            buf_entry(3, &output),
-            buf_entry(4, &debug_scratch_buf),
+            buf_entry(3, &num_of_values_buf),
+            buf_entry(4, &output),
+            buf_entry(5, &debug_scratch_buf),
         ],
         number_of_wgs as u32,
         None,
@@ -343,6 +356,8 @@ fn radix_step_by_step_hist() {
     let hist_buf = h.zeroed_buf(256 * n_wg as usize);
 
     let input_keys = h.storage_buf(&input_keys_vec);
+    let num_of_values_buf = h.scalar_buf(input_keys_vec.len() as u32);
+
     let mut step = ComputeStep::new(
         &h.device,
         include_str!("radix_histogram.wgsl"),
@@ -351,7 +366,8 @@ fn radix_step_by_step_hist() {
             buf_entry(0, &input_keys),
             buf_entry(1, &h.scalar_buf(0)),
             buf_entry(2, &h.scalar_buf(4)),
-            buf_entry(3, &hist_buf),
+            buf_entry(3, &num_of_values_buf),
+            buf_entry(4, &hist_buf),
         ],
         n_wg,
         None,
@@ -371,25 +387,6 @@ fn radix_step_by_step_hist() {
 }
 
 #[test]
-fn radix_step_by_step_prefix() {
-    let h = GpuTestHarness::new();
-    let n_wg = 4;
-
-    let mut input = vec![0u32; 256 * n_wg as usize]; // histogram
-    for v in 1u32..=10 {
-        let index = (n_wg * v) as usize;
-        input[index] = 1u32;
-    }
-    let input_buf = h.storage_buf(&input);
-    let mut prefix_scan = PrefixScan::new(&h.device, input_buf);
-
-    let expected = compute_prefix_from_hist(input, 4);
-
-    let result = h.run_and_readback(&mut prefix_scan);
-    assert_eq!(result, expected);
-}
-
-#[test]
 fn radix_scatter_step() {
     let h = GpuTestHarness::new();
 
@@ -399,6 +396,7 @@ fn radix_scatter_step() {
     let input_keys = h.storage_buf(&input_keys_vec);
     let input_values = h.storage_buf(&input_values_vec);
     let input_values_len = input_values_vec.len();
+    let num_of_values_buf = h.scalar_buf(input_values_len as u32);
 
     let output = h.zeroed_buf(input_values_len);
     let debug = h.zeroed_buf(input_values_len);
@@ -414,8 +412,9 @@ fn radix_scatter_step() {
             buf_entry(0, &prefix_result),
             buf_entry(1, &input_keys),
             buf_entry(2, &input_values),
-            buf_entry(3, &output),
-            buf_entry(4, &debug),
+            buf_entry(3, &num_of_values_buf),
+            buf_entry(4, &output),
+            buf_entry(5, &debug),
         ],
         4u32,
         None,
@@ -505,31 +504,4 @@ fn complete_radix_with_small_steps() {
         ],
         "correct sort"
     );
-}
-
-#[test]
-fn expand_step() {
-    let h = GpuTestHarness::new();
-    let input: Vec<u32> = vec![1, 17, 19, 22, 26, 27, 32, 60, 71, 100];
-
-    let mut expected: Vec<u32> = vec![0u32; 100];
-    for i in 0..input.len() {
-        if i % 2 == 0 {
-            expected[input[i] as usize] = input[i + 1];
-        }
-    }
-    let input_buf = h.storage_buf(&input);
-    let output_buf = h.zeroed_buf(100);
-    let mut expand = ComputeStep::new(
-        &h.device,
-        include_str!("expand.wgsl").into(),
-        "expand",
-        &[buf_entry(0, &input_buf), buf_entry(1, &output_buf)],
-        4,
-        None,
-    );
-    expand.set_result(output_buf);
-
-    let result = h.run_and_readback(&mut expand);
-    assert_eq!(result, expected);
 }

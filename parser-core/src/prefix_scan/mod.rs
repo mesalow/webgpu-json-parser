@@ -1,6 +1,8 @@
 // taken from https://github.com/YohYamasaki/wgpu-prefix-sum-demo/tree/main
 
 use wgpu::{BindGroup, Buffer, ComputePass, ComputePipeline, Device};
+#[cfg(test)]
+mod prefix_scan_tests;
 
 use crate::ComputeStepTrait;
 

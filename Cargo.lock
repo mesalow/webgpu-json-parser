@@ -761,15 +761,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "parser-gpu"
+name = "parser-core"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "env_logger",
- "log",
  "pollster",
  "rand",
  "wgpu",
+]
+
+[[package]]
+name = "parser-gpu"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "parser-core",
+ "pollster",
 ]
 
 [[package]]

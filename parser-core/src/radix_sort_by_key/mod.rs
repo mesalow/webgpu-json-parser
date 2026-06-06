@@ -7,6 +7,9 @@ use crate::{
     ComputeStepTrait,
 };
 
+#[cfg(test)]
+mod tests;
+
 pub struct RadixSortByKey {
     histogram_step: ComputeStep,
     prefix_scan_step: PrefixScan,

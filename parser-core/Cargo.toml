@@ -1,0 +1,14 @@
+[package]
+name = "parser-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+
+[dependencies]
+wgpu = "22"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+pollster = "0.3"
+rand = "0.10.1"

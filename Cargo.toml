@@ -3,10 +3,10 @@ name = "parser-gpu"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["parser-core"]
+
 [dependencies]
-wgpu = "22"
+parser-core = { path = "parser-core" }
 pollster = "0.3"
-bytemuck = { version = "1", features = ["derive"] }
 env_logger = "0.11"
-log = "0.4"
-rand = "0.10.1"
