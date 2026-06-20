@@ -12,7 +12,7 @@ mod test_harness;
 
 use compute_step::ComputeStep;
 use utils::{buf_entry, zeroed_storage_buf};
-use wgpu::{util::DeviceExt, Buffer, ComputePass};
+use wgpu::{Buffer, ComputePass, util::DeviceExt};
 
 use crate::{prefix_scan::PrefixScan, radix_sort_by_key::RadixSortByKey, utils::create_u32_buf};
 
@@ -80,9 +80,9 @@ pub async fn run(json_string: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std:
     });
 
     let word_count = bytes.len() / 4;
-    let output_word_count = (word_count + 7) / 8;
+    let bits_per_word_count = (word_count + 7) / 8;
     let output_size = (bytes.len() * std::mem::size_of::<u32>()) as u64;
-    let output_size_bitmap = (output_word_count * std::mem::size_of::<u32>()) as u64;
+    let output_size_bitmap = (bits_per_word_count * std::mem::size_of::<u32>()) as u64;
 
     let number_of_workgroups = (word_count as u32).div_ceil(WORKGROUP_SIZE);
 
@@ -95,24 +95,24 @@ pub async fn run(json_string: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std:
         .max(1);
 
     // step 1
-    let bitmap_structural = zeroed_storage_buf(&device, "bitmap_structural", output_word_count);
-    let bitmap_backslash = zeroed_storage_buf(&device, "bitmap_backslash", output_word_count);
-    let bitmap_quote = zeroed_storage_buf(&device, "bitmap_quote", output_word_count);
-    let bitmap_open_close = zeroed_storage_buf(&device, "bitmap_open_close", output_word_count);
+    let bitmap_structural = zeroed_storage_buf(&device, "bitmap_structural", bits_per_word_count);
+    let bitmap_backslash = zeroed_storage_buf(&device, "bitmap_backslash", bits_per_word_count);
+    let bitmap_quote = zeroed_storage_buf(&device, "bitmap_quote", bits_per_word_count);
+    let bitmap_open_close = zeroed_storage_buf(&device, "bitmap_open_close", bits_per_word_count);
 
     // step2
-    let bitmap_quote_final = zeroed_storage_buf(&device, "bitmap_quote_final", output_word_count);
+    let bitmap_quote_final = zeroed_storage_buf(&device, "bitmap_quote_final", bits_per_word_count);
 
     // step3_1 --> get bitmap_quote_final and return per word quote count
     let per_word_quote_count =
-        zeroed_storage_buf(&device, "per_word_quote_count", output_word_count);
+        zeroed_storage_buf(&device, "per_word_quote_count", bits_per_word_count);
 
     //step 3_3 --> string mask to mask out struct chars in strings
-    let string_mask = zeroed_storage_buf(&device, "string_mask", output_word_count);
+    let string_mask = zeroed_storage_buf(&device, "string_mask", bits_per_word_count);
 
     // step 4_1 --> count of structural + count of oc
-    let count_structural = zeroed_storage_buf(&device, "count_structural", output_word_count);
-    let count_open_close = zeroed_storage_buf(&device, "count_open_close", output_word_count);
+    let count_structural = zeroed_storage_buf(&device, "count_structural", bits_per_word_count);
+    let count_open_close = zeroed_storage_buf(&device, "count_open_close", bits_per_word_count);
     let total_count_open_close = create_u32_buf(&device, "total_count_open_close", 0);
 
     // step 4_3 --> structural index, open-close and open-close-index
