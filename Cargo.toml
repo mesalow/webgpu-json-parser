@@ -10,3 +10,4 @@ members = ["parser-core"]
 parser-core = { path = "parser-core" }
 pollster = "0.3"
 env_logger = "0.11"
+clap = { version = "4.6.1", features = ["derive"] }

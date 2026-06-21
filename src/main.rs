@@ -1,44 +1,39 @@
-use std::{
-    fs::{File, read, read_to_string},
-    iter::Enumerate,
-    str::Chars,
-};
+use clap::Parser;
+use std::fs::read_to_string;
 
 use crate::QueryKey::{ArrayIndex, ObjectKey};
 use std::string::String;
+
+#[derive(Parser)]
+#[command(version, about)]
+struct Args {
+    /// Path to the json file to read
+    path: String,
+
+    /// Query, use [0] to access first array element and .someKey to access someKey field in object
+    /// EXAMPLE: .a[123].b[1][0].c
+    query: String,
+}
 
 fn main() {
     env_logger::init();
     // let json_string = r#"{"a1": "a\\", "b1": "string with \\\"so called\\\\\" double quotes", "a":null,"b":123,"c":24562472.12346757,"d":"a string","e":[1,2,3],"f":["a","b","c"],"g":{"a":{"b":1},"c":[{"x":1},{"y":2}],"d":[[1,2],[3,4]]}}"#;
 
     //let json_string = r#"[{"a1": "a\\", "b1": "string with \\\"so called\\\\\" double quotes", "a3":null,"b":123,"c":24562472.12346757,"d":"a string","e":[1,2,3],"f":["a4","b","c"],"g":{"a":{"x":1,"y":"hi"},"c":[{"x":1},{"y":2}, {"z": [11,22,33]}],"d":[[1,2],[3,4]]}}]"#;
+    let args = Args::parse();
+    println!("Called with path = {} query = {}", args.path, args.query);
 
-    let file_content = read_to_string("./twitter_sample_large_record.json");
+    let file_content = read_to_string(args.path.as_str());
     let json_string = file_content.unwrap();
 
-    let query = "$[0].source";
-    println!("reading in {:?}", json_string);
-    println!("querying {:?}", query);
     match pollster::block_on(parser_core::run(json_string.as_str())) {
         Ok((oc_pairs, structural_indexes)) => {
-            // for bitmap output:
-            /* let gpu: Vec<u32> = output
-            .iter()
-            .enumerate()
-            .flat_map(|(word_idx, word)| {
-                (0..32u32).filter_map(move |bit| {
-                    if (word >> bit) & 1 == 1 {
-                        Some(word_idx as u32 * 32 + bit)
-                    } else {
-                        None
-                    }
-                })
-            })
-            .collect(); */
-            println!("oc_pairs_vec {:?}", oc_pairs);
-            println!("structural_indexes {:?}", structural_indexes);
-
-            let value = run_query(json_string.as_str(), oc_pairs, structural_indexes, query);
+            let value = run_query(
+                json_string.as_str(),
+                oc_pairs,
+                structural_indexes,
+                args.query.as_str(),
+            );
             println!("read value {:?}", value);
         }
         Err(e) => eprintln!("Error: {e}"),
@@ -53,14 +48,14 @@ enum JsonPrimitive {
     Number(f64),
 }
 
-struct Parser {
+struct JsonParser {
     json_string: String,
     structural_indexes: Vec<u32>,
     open_close_pairs: Vec<u32>,
     current_structural_index: usize,
 }
 
-impl Parser {
+impl JsonParser {
     fn get_current_structural(&self) -> &str {
         let current_structural_index =
             self.structural_indexes[self.current_structural_index] as usize;
@@ -212,9 +207,9 @@ impl Parser {
                         self.assert_current_is_colon();
 
                         let end_struct_idx =
-                            self.structural_indexes[(self.current_structural_index)] as usize; // the ':'
+                            self.structural_indexes[self.current_structural_index] as usize; // the ':'
                         let next_in_structural_idx =
-                            self.structural_indexes[(self.current_structural_index) + 1] as usize;
+                            self.structural_indexes[self.current_structural_index + 1] as usize;
                         let diff = next_in_structural_idx - end_struct_idx;
                         if diff == 1 {
                             // next structural immediately follows colon -> object or array, jump ahead via pairs
@@ -272,7 +267,7 @@ fn run_query<'a>(
     query: &'a str,
 ) -> JsonPrimitive {
     let parsed_query = parse_query(query);
-    let mut parser = Parser {
+    let mut parser = JsonParser {
         json_string: json_string.to_string(),
         open_close_pairs: oc_pairs,
         structural_indexes: structural_indexes,
